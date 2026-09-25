@@ -2,6 +2,16 @@
 
 Living list. Updated 2026-09-25. Device-verified items move out; new findings move in.
 
+## Decisive on-device protocol (do this first on hardware)
+
+1. Install debug APK, Fetch, open Settings → Playback diagnostics.
+2. Tap **Play test tone** (bundled 5s 440Hz WAV through the real pipeline):
+   - Tone audible ⇒ engine/connection fine → tap a library song; if silent,
+     run **Probe current file** (URI readability) and copy the report.
+   - Tone silent ⇒ engine/connection broken → copy the report (state, timeline,
+     volume, last error) and fix that layer.
+3. Report back: tone result + probe result + copied diagnostics.
+
 ## Needs a real Android device (no device attached to this machine)
 
 - **Audible playback proof**: tap → sound through speaker/headphones, minimize/lock

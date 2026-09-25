@@ -24,13 +24,19 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import com.veeshays.pulse.ui.PlayerUiState
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
@@ -46,10 +52,11 @@ fun DiagnosticsCard(ps: PlayerUiState) {
     var probing by remember { mutableStateOf(false) }
     var probe by remember { mutableStateOf<String?>(null) }
     var copied by remember { mutableStateOf(false) }
+    var toneState by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
 
     val c = ps.controller
-    val stateName = when (c?.playbackState) {
-        Player.STATE_IDLE -> "idle"
+    val stateName = when (c?.playbackState) {        Player.STATE_IDLE -> "idle"
         Player.STATE_BUFFERING -> "buffering"
         Player.STATE_READY -> "ready"
         Player.STATE_ENDED -> "ended"
@@ -132,6 +139,52 @@ fun DiagnosticsCard(ps: PlayerUiState) {
                     Spacer(Modifier.height(8.dp))
                     CircularProgressIndicator()
                 }
+            }
+            // Self-test: known-good bundled WAV through the SAME controller →
+            // service → ExoPlayer path as library taps. Tone audible ⇒ engine
+            // OK and MediaStore URIs are suspect; tone silent ⇒ engine broken.
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = {
+                    val ctl = ps.controller
+                    if (ctl == null) {
+                        toneState = "engine not connected — tap Fetch/Library first"
+                        PlaybackConnection.reportError("Test tone needs the playback engine")
+                        return@Button
+                    }
+                    runCatching {
+                        val uri = Uri.parse("android.resource://${ctx.packageName}/raw/probe_tone")
+                        val item = MediaItem.Builder()
+                            .setMediaId("pupplay://probe-tone")
+                            .setUri(uri)
+                            .setMediaMetadata(
+                                MediaMetadata.Builder()
+                                    .setTitle("Probe tone 440Hz")
+                                    .setArtist("PupPlay self-test")
+                                    .build(),
+                            )
+                            .build()
+                        ctl.setMediaItems(listOf(item), 0, C.TIME_UNSET)
+                        ctl.prepare()
+                        ctl.play()
+                        toneState = "tone sent — listening…"
+                        scope.launch {
+                            delay(3000)
+                            toneState = if (ctl.isPlaying) {
+                                "TONE PLAYING (pos ${ctl.currentPosition}ms) — engine OK, suspect media URIs"
+                            } else {
+                                "tone NOT playing (state=${ctl.playbackState}) — engine problem"
+                            }
+                        }
+                    }.onFailure {
+                        toneState = "tone failed: ${it.message}"
+                        PlaybackConnection.reportError("Test tone failed")
+                    }
+                }) { Text("Play test tone") }
+            }
+            toneState?.let {
+                Spacer(Modifier.height(4.dp))
+                Text(it, style = MaterialTheme.typography.bodySmall)
             }
         }
     }
