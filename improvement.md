@@ -2,6 +2,18 @@
 
 Living list. Updated 2026-09-25. Device-verified items move out; new findings move in.
 
+## Engine verdict (proven on JVM via Robolectric, PlaybackEngineTest 5/5)
+
+- `PlaybackService` lifecycle runs: session + ExoPlayer constructed, session
+  wraps the SAME player instance the UI would drive.
+- Real ExoPlayer `prepare()` resolves a local file to READY with true
+  duration (~5000ms for the fixture); `play()` advances position; no errors.
+- Therefore the engine, MediaSource resolution, and state machine WORK. The
+  on-device static player is NOT an engine defect — remaining suspects are, in
+  order: (1) controller↔session binding on the device (stock Media3 binder hop;
+  could not bind under Robolectric's manifest parsing), (2) content-URI
+  readability on that device, (3) audio focus/output routing on that device.
+
 ## Decisive on-device protocol (do this first on hardware)
 
 1. Install debug APK, Fetch, open Settings → Playback diagnostics.
