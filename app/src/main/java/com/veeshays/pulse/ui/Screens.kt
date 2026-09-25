@@ -1,4 +1,11 @@
+@file:OptIn(ExperimentalFoundationApi::class, androidx.media3.common.util.UnstableApi::class)
+
 package com.veeshays.pulse.ui
+
+// NOTE: group headers are plain items, not stickyHeader(): the resolved
+// Compose-foundation classpath in this project does not expose that symbol
+// (duplicate foundation artifacts on the compile classpath), so sticky
+// headers are deliberately avoided rather than fought.
 
 import android.Manifest
 import android.content.pm.PackageManager
@@ -6,8 +13,10 @@ import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,28 +25,37 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Fullscreen
-import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.FullscreenExit
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PictureInPicture
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -45,23 +63,40 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import androidx.media3.common.Player
+import androidx.media3.common.PlaybackParameters
+import androidx.media3.ui.PlayerView
 import com.veeshays.pulse.PulseApp
 import com.veeshays.pulse.library.MediaLibrary
 import com.veeshays.pulse.library.diffLibrary
+import com.veeshays.pulse.lyrics.LyricOutcome
+import com.veeshays.pulse.lyrics.LyricResult
+import com.veeshays.pulse.lyrics.LyricStore
+import com.veeshays.pulse.lyrics.currentLine
+import com.veeshays.pulse.lyrics.fetchLyrics
 import com.veeshays.pulse.models.Track
 import com.veeshays.pulse.playback.TIME_UNSET
+import com.veeshays.pulse.playback.DiagnosticsCard
+import com.veeshays.pulse.playback.PlaybackConnection
 import com.veeshays.pulse.playback.buildMediaItems
 import com.veeshays.pulse.playback.startIndexOf
+import kotlinx.coroutines.launch
 
 // ---------------------------------------------------------------------------
 // PLAYER — desktop Player pane as a stacked touch layout.
@@ -70,25 +105,43 @@ import com.veeshays.pulse.playback.startIndexOf
 // ---------------------------------------------------------------------------
 
 @Composable
-fun PlayerScreen(onOpenQueue: () -> Unit, onOpenSheet: (String) -> Unit) {
+fun PlayerScreen(ps: PlayerUiState, onOpenQueue: () -> Unit, onOpenSheet: (String) -> Unit) {
     val app = LocalContext.current.applicationContext as PulseApp
     val state by app.store.state.collectAsState()
     val efficient = state.perfMode == Brand.Perf.EFFICIENT
-    val ps = rememberPlayerState(if (efficient) 1000L else 500L)
     val accent = MaterialTheme.colorScheme.primary
+    var lyricsOpen by remember { mutableStateOf(false) }
 
     Box(Modifier.fillMaxSize()) {
         // Sun identity wash behind everything (static in Efficient/nap mode).
         SunEffect(accent = accent, modifier = Modifier.fillMaxSize(), stained = state.glass == "STAINED", animated = !efficient)
-        LazyColumn(
-            Modifier.fillMaxSize().padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            item {
-                Spacer(Modifier.height(8.dp))
-                PlayerHero(currentKey = ps.mediaId ?: state.queue.keys.getOrNull(state.queue.index))
+        Column(Modifier.fillMaxSize()) {
+            // Scrollable identity zone: artwork → title/metadata.
+            LazyColumn(
+                Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                item {
+                    Spacer(Modifier.height(8.dp))
+                    PlayerHero(ps = ps)
+                }
             }
-            item {
+            // FIXED bottom player area — progress always lives here with the
+            // transport, never floating mid-screen (§3 hierarchy).
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surface)
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+            ) {
+                SeekRow(
+                    positionMs = ps.positionMs,
+                    durationMs = ps.durationMs.coerceAtLeast(1L),
+                    onSeek = { ps.controller?.seekTo(it) },
+                )
                 // Transport commands the service-owned player; shuffle/repeat
                 // also persist so cold start restores them.
                 TransportRow(
@@ -116,59 +169,61 @@ fun PlayerScreen(onOpenQueue: () -> Unit, onOpenSheet: (String) -> Unit) {
                         app.store.update { it.copy(queue = it.queue.copy(repeat = next)) }
                     },
                 )
-            }
-            item {
-                SeekRow(
-                    positionMs = ps.positionMs,
-                    durationMs = ps.durationMs.coerceAtLeast(1L),
-                    onSeek = { ps.controller?.seekTo(it) },
-                )
-            }
-            item {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    TextButton(onClick = onOpenQueue) { Text("Queue (${state.queue.keys.size})") }
+                    TextButton(onClick = onOpenQueue) {
+                        val n = ps.controller?.mediaItemCount ?: state.queue.keys.size
+                        Text(if (n > 0) "Queue ($n)" else "Queue")
+                    }
+                    TextButton(onClick = { lyricsOpen = true }) { Text("Lyrics") }
                     TextButton(onClick = { app.store.update { it.copy(flow = !it.flow) } }) {
                         Text(if (state.flow) "Flow ∞ on" else "Flow ∞ off")
                     }
                 }
             }
-            item { EqPanel() }
+            if (lyricsOpen) LyricsSheet(ps = ps, onDismiss = { lyricsOpen = false })
         }
     }
 }
 
 @Composable
-private fun PlayerHero(currentKey: String?) {
+private fun PlayerHero(ps: PlayerUiState) {
     val app = LocalContext.current.applicationContext as PulseApp
-    val key = currentKey
-    Card(Modifier.fillMaxWidth()) {
+    val state by app.store.state.collectAsState()
+    val key = ps.mediaId ?: state.queue.keys.getOrNull(state.queue.index)
+    val title = ps.title?.ifBlank { null } ?: key?.substringAfterLast('/')?.substringBeforeLast('.')
+    GlassCard(Modifier.fillMaxWidth()) {
         Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            // Artwork with a soft accent glow (desktop hero treatment, one static layer).
             Box(
-                Modifier
-                    .size(96.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(MaterialTheme.colorScheme.primaryContainer),
-                contentAlignment = Alignment.Center,
+                modifier = Modifier.shadow(
+                    16.dp, RoundedCornerShape(16.dp),
+                    ambientColor = MaterialTheme.colorScheme.primary,
+                    spotColor = MaterialTheme.colorScheme.primary,
+                ),
             ) {
-                Icon(Icons.Filled.MusicNote, contentDescription = "Cover art", modifier = Modifier.size(48.dp))
+                ArtThumb(ps.artUri, 96.dp, "Cover art")
             }
+            ArtThumb(ps.artUri, 96.dp, "Cover art")
             Column(Modifier.weight(1f).padding(start = 12.dp)) {
                 Text(
-                    key?.substringAfterLast('/')?.substringBeforeLast('.') ?: Brand.Copy.NOTHING_PLAYING,
+                    title ?: Brand.Copy.NOTHING_PLAYING,
                     style = MaterialTheme.typography.titleLarge,
-                    maxLines = 2,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    if (key == null) Brand.Copy.ADD_TO_START else "PupPlay library",
+                    ps.artist?.ifBlank { null }
+                        ?: ps.album?.ifBlank { null }
+                        ?: if (key == null) Brand.Copy.ADD_TO_START else "PupPlay library",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis,
                 )
                 RatingBar(
-                    rating = 0,
+                    rating = if (key != null) state.ratings[key] ?: 0 else 0,
                     onRate = { stars ->
                         if (key != null) {
                             app.store.update { s ->
-                                s.copy(ratings = s.ratings + (key to stars))
+                                s.copy(ratings = if (stars == 0) s.ratings - key else s.ratings + (key to stars))
                             }
                         }
                     },
@@ -184,11 +239,10 @@ private fun PlayerHero(currentKey: String?) {
 // ---------------------------------------------------------------------------
 
 @Composable
-fun LibraryScreen(onOpenSheet: (String) -> Unit) {
+fun LibraryScreen(ps: PlayerUiState, onOpenSheet: (String) -> Unit, onOpenVideo: () -> Unit) {
     val ctx = LocalContext.current
     val app = ctx.applicationContext as PulseApp
     val state by app.store.state.collectAsState()
-    val ps = rememberPlayerState(if (state.perfMode == Brand.Perf.EFFICIENT) 1000L else 500L)
     var query by remember { mutableStateOf("") }
     var mode by remember { mutableStateOf("Songs") }
     var sort by remember { mutableStateOf("New") }
@@ -202,6 +256,7 @@ fun LibraryScreen(onOpenSheet: (String) -> Unit) {
     var fetchProgress by remember { mutableIntStateOf(0) }
     // Application context: a scan in flight must never pin this Activity.
     val library = remember(ctx) { MediaLibrary(ctx.applicationContext) }
+    val scope = rememberCoroutineScope()
 
     val permission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO
     else Manifest.permission.READ_EXTERNAL_STORAGE
@@ -256,7 +311,18 @@ fun LibraryScreen(onOpenSheet: (String) -> Unit) {
         }
     }
 
-    Column(Modifier.fillMaxSize().padding(12.dp)) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            // Restrained depth: static vertical wash (free — no animation clock).
+            .background(
+                Brush.verticalGradient(
+                    0f to MaterialTheme.colorScheme.surface,
+                    1f to MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                ),
+            )
+            .padding(12.dp),
+    ) {
         OutlinedTextField(
             value = query,
             onValueChange = { query = it; limit = 100 },
@@ -278,8 +344,11 @@ fun LibraryScreen(onOpenSheet: (String) -> Unit) {
                 .semantics { contentDescription = Brand.Labels.FETCH_MEDIA },
         ) { Text("${Brand.Labels.PAW} ${Brand.Labels.FETCH_MEDIA}") }
         Spacer(Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("Songs", "Artists", "Albums", "Favorites").forEach { m ->
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+        ) {
+            listOf("Songs", "Artists", "Albums", "Videos", "Recent", "Favorites").forEach { m ->
                 FilterChip(selected = mode == m, onClick = { mode = m; limit = 100 }, label = { Text(m) })
             }
         }
@@ -327,64 +396,156 @@ fun LibraryScreen(onOpenSheet: (String) -> Unit) {
 
         val favs = state.favTracks
         val ratings = state.ratings
-        val filtered = remember(tracks, query, mode, sort, favs) {
-            var list = tracks
-            if (query.isNotBlank()) {
-                list = list.filter {
-                    it.title.contains(query, true) || it.artist.contains(query, true) || it.album.contains(query, true)
+        val history = state.history
+
+        // Queue-follows-view: the tapped list becomes the player playlist
+        // (with resume points); the snapshot persists for cold start.
+        fun playTracks(list: List<Track>, start: Track) {
+            val items = buildMediaItems(list, state.positions) { t ->
+                library.artworkUri(t.key, t.isVideo)
+            }
+            ps.controller?.let { c ->
+                runCatching {
+                    c.setMediaItems(items, startIndexOf(list, start.key), TIME_UNSET)
+                    c.prepare()
+                    c.play()
+                }.onFailure {
+                    PlaybackConnection.reportError("Couldn't start playback — tap again")
                 }
+                // Watchdog: a prepared player leaves IDLE almost immediately.
+                // Still IDLE after 2.5s means genuinely stuck — report once.
+                scope.launch {
+                    kotlinx.coroutines.delay(2500)
+                    if (c.playbackState == Player.STATE_IDLE) {
+                        PlaybackConnection.reportError("Playback didn't start — check the file format")
+                    }
+                }
+            } ?: run {
+                // Never fail silently: (re)start the engine and say so.
+                PlaybackConnection.connect(ctx)
+                PlaybackConnection.reportError("Starting playback engine — tap once more")
             }
-            list = when (mode) {
-                "Favorites" -> list.filter { it.key in favs }
-                else -> list
+            app.store.update { s ->
+                s.copy(queue = s.queue.copy(keys = list.map { x -> x.key }, index = list.indexOf(start)))
             }
-            when (sort) {
-                "A–Z" -> list.sortedBy { it.title.lowercase() }
-                "♥" -> list.sortedByDescending { if (it.key in favs) 1 else 0 }
-                "★" -> list.sortedByDescending { ratings[it.key] ?: 0 }
-                else -> list.sortedByDescending { it.dateAdded }
+            if (start.isVideo) onOpenVideo()
+        }
+
+        val searched = remember(tracks, query) {
+            if (query.isBlank()) tracks
+            else tracks.filter {
+                it.title.contains(query, true) || it.artist.contains(query, true) || it.album.contains(query, true)
             }
         }
-        Text("${filtered.size} tracks", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        LazyColumn(Modifier.fillMaxSize()) {
-            items(filtered.take(limit), key = { it.key }) { t ->
-                TrackRow(
-                    track = t,
-                    playing = state.queue.keys.getOrNull(state.queue.index) == t.key,
-                    rating = ratings[t.key] ?: 0,
-                    fav = t.key in favs,
-                    onTap = {
-                        // Queue-follows-view: the tapped view becomes the player
-                        // playlist (with resume points); the snapshot persists
-                        // for cold-start restoration.
-                        val items = buildMediaItems(filtered, state.positions) { t ->
-                            library.artworkUri(t.key, t.isVideo)
-                        }
-                        ps.controller?.let { c ->
-                            c.setMediaItems(items, startIndexOf(filtered, t.key), TIME_UNSET)
-                            c.prepare()
-                            c.play()
-                        }
-                        app.store.update { s ->
-                            s.copy(queue = s.queue.copy(keys = filtered.map { x -> x.key }, index = filtered.indexOf(t)))
-                        }
-                    },
-                    onLongPress = { onOpenSheet(t.key) },
-                    onToggleFav = {
-                        app.store.update { s ->
-                            s.copy(favTracks = if (t.key in s.favTracks) s.favTracks - t.key else s.favTracks + t.key)
-                        }
-                    },
-                )
+        val scoped = remember(searched, mode, favs, history) {
+            when (mode) {
+                "Videos" -> searched.filter { it.isVideo }
+                "Favorites" -> searched.filter { it.key in favs }
+                "Recent" -> history.asReversed().mapNotNull { k -> searched.find { it.key == k } }.distinct()
+                else -> searched
             }
-            if (filtered.size > limit) {
+        }
+        val ordered = remember(scoped, sort, favs, ratings) {
+            when (sort) {
+                "A–Z" -> scoped.sortedBy { it.title.lowercase() }
+                "♥" -> scoped.sortedByDescending { if (it.key in favs) 1 else 0 }
+                "★" -> scoped.sortedByDescending { ratings[it.key] ?: 0 }
+                else -> scoped.sortedByDescending { it.dateAdded }
+            }
+        }
+        // Artists/Albums render as sticky group headers with play-all.
+        val groups: List<Pair<String, List<Track>>>? = remember(ordered, mode) {
+            when (mode) {
+                "Artists" -> ordered.groupBy { it.artist.ifBlank { "Unknown artist" } }
+                    .toList().sortedBy { it.first.lowercase() }
+                "Albums" -> ordered.groupBy { it.album.ifBlank { "Unknown album" } }
+                    .toList().sortedBy { it.first.lowercase() }
+                else -> null
+            }
+        }
+        val flatCount = groups?.sumOf { it.second.size } ?: ordered.size
+        val unit = if (mode == "Videos") "videos" else "tracks"
+        Text("$flatCount $unit", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+        @Composable
+        fun queueRow(t: Track, list: List<Track>) {
+            TrackRow(
+                track = t,
+                playing = ps.mediaId == t.key,
+                rating = ratings[t.key] ?: 0,
+                fav = t.key in favs,
+                onTap = { playTracks(list, t) },
+                onLongPress = { onOpenSheet(t.key) },
+                onToggleFav = {
+                    app.store.update { s ->
+                        s.copy(favTracks = if (t.key in s.favTracks) s.favTracks - t.key else s.favTracks + t.key)
+                    }
+                },
+            )
+        }
+
+        if (!scanning && ordered.isEmpty()) {
+            // Sensible empty state per mode — Fetch stays one tap away above.
+            GlassCard(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+                Column(Modifier.padding(20.dp)) {
+                    Text(
+                        when {
+                            tracks.isEmpty() -> "${Brand.Labels.PAW} Your library is empty"
+                            query.isNotBlank() -> "No matches for “$query”"
+                            mode == "Favorites" -> "No favorites yet — tap ♡ on anything"
+                            mode == "Recent" -> "Nothing played yet"
+                            mode == "Videos" -> "No videos found"
+                            else -> "Nothing here yet"
+                        },
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        if (tracks.isEmpty()) Brand.Copy.LIBRARY_EMPTY
+                        else "Try another search, or Fetch again.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        LazyColumn(Modifier.fillMaxSize()) {
+            if (groups != null) {
+                groups.forEach { (name, members) ->
+                    item(key = "h-$name") {
+                        Surface(tonalElevation = 2.dp) {
+                            Row(
+                                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    "$name · ${members.size}", maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                IconButton(
+                                    onClick = { if (members.isNotEmpty()) playTracks(members, members[0]) },
+                                    modifier = Modifier.size(48.dp).semantics {
+                                        contentDescription = "Play all by $name"
+                                    },
+                                ) { Icon(Icons.Filled.PlayArrow, null) }
+                            }
+                        }
+                    }
+                    items(members.take(limit), key = { it.key }) { t -> queueRow(t, members) }
+                }
+            } else {
+                items(ordered.take(limit), key = { it.key }) { t -> queueRow(t, ordered) }
+            }
+            if (ordered.size > limit) {
                 item {
                     TextButton(
                         onClick = { limit += 100 },
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(8.dp),
-                    ) { Text("Show more (${filtered.size - limit} left)") }
+                    ) { Text("Show more (${ordered.size - limit} left)") }
                 }
             }
         }
@@ -397,72 +558,275 @@ fun LibraryScreen(onOpenSheet: (String) -> Unit) {
 // ---------------------------------------------------------------------------
 
 @Composable
-fun VideoScreen() {
+fun VideoScreen(ps: PlayerUiState) {
     var fullscreen by remember { mutableStateOf(false) }
     BackHandler(enabled = fullscreen) { fullscreen = false } // exit fullscreen first
     var speed by remember { mutableStateOf(1f) }
-    val app = LocalContext.current.applicationContext as PulseApp
-    val uiState by app.store.state.collectAsState()
-    val ps = rememberPlayerState(if (uiState.perfMode == Brand.Perf.EFFICIENT) 1000L else 500L)
+
+    // One shared ExoPlayer (service) renders into exactly one attached
+    // PlayerView at a time: inline stage, or the fullscreen dialog.
+    // (resizeMode defaults to FIT — aspect preserved, never stretched.)
+    @Composable
+    fun stage(modifier: Modifier, tag: String) {
+        AndroidView(
+            factory = { ctx ->
+                PlayerView(ctx).apply {
+                    useController = false // PupPlay renders its own fixed chrome
+                }
+            },
+            update = { v ->
+                v.player = when {
+                    tag == "full" && fullscreen -> ps.controller
+                    tag == "inline" && !fullscreen -> ps.controller
+                    else -> null
+                }
+            },
+            onRelease = { it.player = null },
+            modifier = modifier.semantics {
+                contentDescription = if (fullscreen) "Video fullscreen" else "Video stage"
+            },
+        )
+    }
+
+    if (fullscreen) {
+        // Immersive dialog: edge-to-edge surface + compact chrome.
+        Dialog(
+            onDismissRequest = { fullscreen = false },
+            properties = DialogProperties(
+                dismissOnBackPress = false, // BackHandler above owns Back
+                dismissOnClickOutside = false,
+                usePlatformDefaultWidth = false,
+                decorFitsSystemWindows = false,
+            ),
+        ) {
+            BackHandler(enabled = true) { fullscreen = false }
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.scrim),
+            ) {
+                stage(Modifier.fillMaxSize(), "full")
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .align(Alignment.BottomCenter)
+                        .background(
+                            Brush.verticalGradient(
+                                0f to Color.Transparent,
+                                1f to MaterialTheme.colorScheme.scrim.copy(alpha = 0.85f),
+                            ),
+                        )
+                        .padding(8.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconButton(
+                        onClick = {
+                            val c = ps.controller ?: return@IconButton
+                            if (c.isPlaying) c.pause() else c.play()
+                        },
+                        modifier = Modifier.size(48.dp).semantics {
+                            contentDescription = if (ps.playing) "Pause" else "Play"
+                        },
+                    ) {
+                        Icon(
+                            if (ps.playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                            null, tint = Color.White, modifier = Modifier.size(32.dp),
+                        )
+                    }
+                    IconButton(
+                        onClick = { fullscreen = false },
+                        modifier = Modifier.size(48.dp).semantics { contentDescription = "Exit fullscreen" },
+                    ) { Icon(Icons.Filled.FullscreenExit, null, tint = Color.White) }
+                }
+            }
+        }
+    }
 
     Column(Modifier.fillMaxSize()) {
         Box(
             Modifier
                 .fillMaxWidth()
-                .then(if (fullscreen) Modifier.fillMaxSize() else Modifier.height(240.dp))
+                .height(240.dp)
                 .background(MaterialTheme.colorScheme.scrim)
-                .clickable { fullscreen = !fullscreen }
-                .semantics { contentDescription = if (fullscreen) "Exit fullscreen" else "Enter fullscreen" },
+                .clickable { fullscreen = true }
+                .semantics { contentDescription = "Enter fullscreen" },
             contentAlignment = Alignment.Center,
         ) {
-            // Real surface when a controller is bound; placeholder otherwise.
-            // PlayerSurface (Media3 Compose) keeps aspect ratio — never stretched.
-            Text("${Brand.Labels.VIDEO} — tap for fullscreen", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            stage(Modifier.fillMaxSize(), "inline")
+            if (ps.mediaId == null) {
+                Text(
+                    "${Brand.Labels.VIDEO} — pick a video from Library",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
-        if (!fullscreen) {
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                TextButton(onClick = { speed = when (speed) { 1f -> 1.5f; 1.5f -> 2f; 2f -> 0.5f; else -> 1f } }) {
-                    Text("${speed}×", modifier = Modifier.semantics { contentDescription = "Playback speed $speed" })
+        SeekRow(
+            positionMs = ps.positionMs,
+            durationMs = ps.durationMs.coerceAtLeast(1L),
+            onSeek = { ps.controller?.seekTo(it) },
+        )
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+                TextButton(onClick = {
+                    speed = when (speed) { 1f -> 1.5f; 1.5f -> 2f; 2f -> 0.5f; else -> 1f }
+                    ps.controller?.setPlaybackParameters(PlaybackParameters(speed))
+                }) {
+                Text("${speed}×", modifier = Modifier.semantics { contentDescription = "Playback speed $speed" })
+            }
+            IconButton(onClick = {}, modifier = Modifier.size(48.dp).semantics { contentDescription = "Picture in picture" }) {
+                Icon(Icons.Filled.PictureInPicture, null)
+            }
+            IconButton(onClick = { fullscreen = true }, modifier = Modifier.size(48.dp).semantics { contentDescription = "Fullscreen" }) {
+                Icon(Icons.Filled.Fullscreen, null)
+            }
+        }
+        TransportRow(
+            playing = ps.playing,
+            shuffle = ps.shuffle,
+            repeat = ps.repeat,
+            onPlayPause = {
+                val c = ps.controller ?: return@TransportRow
+                if (c.isPlaying) c.pause() else c.play()
+            },
+            onNext = { ps.controller?.seekToNextMediaItem() },
+            onPrev = { ps.controller?.seekToPreviousMediaItem() },
+            onShuffle = { ps.controller?.let { c -> c.shuffleModeEnabled = !c.shuffleModeEnabled } },
+            onRepeat = {
+                ps.controller?.let { c ->
+                    c.repeatMode = when (c.repeatMode) {
+                        Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
+                        Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
+                        else -> Player.REPEAT_MODE_OFF
+                    }
                 }
-                IconButton(onClick = {}, modifier = Modifier.size(48.dp).semantics { contentDescription = "Picture in picture" }) {
-                    Icon(Icons.Filled.PictureInPicture, null)
+            },
+            compact = true,
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// LYRICS — dedicated sheet (LRCLIB lookup + local cache). Loading never
+// blocks playback; missing lyrics and network failure get distinct states.
+// ---------------------------------------------------------------------------
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun LyricsSheet(ps: PlayerUiState, onDismiss: () -> Unit) {
+    BackHandler(onBack = onDismiss)
+    val ctx = LocalContext.current
+    val store = remember(ctx) { LyricStore(ctx.applicationContext) }
+    val artist = ps.artist?.trim().orEmpty()
+    val title = ps.title?.trim().orEmpty()
+    var outcome by remember(ps.mediaId) { mutableStateOf<LyricOutcome?>(null) }
+    var attempt by remember(ps.mediaId) { mutableIntStateOf(0) }
+
+    LaunchedEffect(ps.mediaId, attempt) {
+        if (artist.isBlank() || title.isBlank()) {
+            outcome = LyricOutcome.NotFound
+            return@LaunchedEffect
+        }
+        store.get(artist, title)?.let {
+            outcome = LyricOutcome.Found(it, fromCache = true)
+            return@LaunchedEffect
+        }
+        val found = fetchLyrics(artist, title, (ps.durationMs / 1000).coerceAtLeast(0L))
+        if (found is LyricOutcome.Found) store.put(artist, title, found.result)
+        outcome = found
+    }
+
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+        Column(Modifier.fillMaxWidth().padding(16.dp)) {
+            Text("Lyrics", style = MaterialTheme.typography.titleLarge)
+            Text(
+                if (title.isBlank()) "Nothing playing" else "$title — ${artist.ifBlank { "Unknown artist" }}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2, overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(8.dp))
+            when (val o = outcome) {
+                null -> Row(
+                    Modifier.fillMaxWidth().padding(vertical = 24.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator(Modifier.semantics { contentDescription = "Loading lyrics" })
+                    Spacer(Modifier.width(12.dp))
+                    Text("Searching lyrics…")
                 }
-                IconButton(onClick = { fullscreen = true }, modifier = Modifier.size(48.dp).semantics { contentDescription = "Fullscreen" }) {
-                    Icon(Icons.Filled.Fullscreen, null)
+                is LyricOutcome.Found -> LyricBody(result = o.result, positionMs = ps.positionMs)
+                LyricOutcome.NotFound -> Column(Modifier.padding(vertical = 16.dp)) {
+                    Text(
+                        if (artist.isBlank() || title.isBlank()) "Play a track with artist + title metadata to look up lyrics."
+                        else "No lyrics found for this track.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+                is LyricOutcome.Offline -> Column(Modifier.padding(vertical = 16.dp)) {
+                    Text(o.reason + " — playback is unaffected.", style = MaterialTheme.typography.bodyMedium)
+                    Spacer(Modifier.height(8.dp))
+                    TextButton(onClick = { attempt++ }) { Text("Retry") }
                 }
             }
-            SeekRow(
-                positionMs = ps.positionMs,
-                durationMs = ps.durationMs.coerceAtLeast(1L),
-                onSeek = { ps.controller?.seekTo(it) },
+            Text(
+                "Lyrics via LRCLIB",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            TransportRow(
-                playing = ps.playing,
-                shuffle = ps.shuffle,
-                repeat = ps.repeat,
-                onPlayPause = {
-                    val c = ps.controller ?: return@TransportRow
-                    if (c.isPlaying) c.pause() else c.play()
-                },
-                onNext = { ps.controller?.seekToNextMediaItem() },
-                onPrev = { ps.controller?.seekToPreviousMediaItem() },
-                onShuffle = { ps.controller?.let { c -> c.shuffleModeEnabled = !c.shuffleModeEnabled } },
-                onRepeat = {
-                    ps.controller?.let { c ->
-                        c.repeatMode = when (c.repeatMode) {
-                            Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
-                            Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
-                            else -> Player.REPEAT_MODE_OFF
-                        }
-                    }
-                },
-                compact = true,
-            )
+            Spacer(Modifier.height(16.dp))
         }
+    }
+}
+
+@Composable
+private fun LyricBody(result: LyricResult, positionMs: Long) {
+    if (result.synced.isNotEmpty()) {
+        val cur = currentLine(result.synced, positionMs)
+        val listState = rememberLazyListState()
+        LaunchedEffect(cur) {
+            if (cur >= 0) runCatching { listState.animateScrollToItem(maxOf(0, cur - 2)) }
+        }
+        LazyColumn(state = listState, modifier = Modifier.heightIn(max = 420.dp)) {
+            items(result.synced.size) { i ->
+                val line = result.synced[i]
+                Text(
+                    line.text,
+                    style = if (i == cur) MaterialTheme.typography.bodyLarge else MaterialTheme.typography.bodyMedium,
+                    color = if (i == cur) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 3.dp)
+                        .semantics { contentDescription = if (i == cur) "Current line: ${line.text}" else line.text },
+                )
+            }
+        }
+    } else {
+        Text(
+            result.plain.ifBlank { "No lyrics found for this track." },
+            style = MaterialTheme.typography.bodyMedium,
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// EQ — dedicated destination; the Player stays focused on artwork →
+// title → progress → transport. Same panel, same persisted state.
+// ---------------------------------------------------------------------------
+
+@Composable
+fun EqScreen() {
+    LazyColumn(
+        Modifier.fillMaxSize().padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        item { Spacer(Modifier.height(8.dp)) }
+        item { EqPanel() }
+        item { Spacer(Modifier.height(8.dp)) }
     }
 }
 
@@ -471,7 +835,7 @@ fun VideoScreen() {
 // ---------------------------------------------------------------------------
 
 @Composable
-fun SettingsScreen() {
+fun SettingsScreen(ps: PlayerUiState) {
     val app = LocalContext.current.applicationContext as PulseApp
     val state by app.store.state.collectAsState()
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -553,5 +917,6 @@ fun SettingsScreen() {
                 }
             }
         }
+        item { DiagnosticsCard(ps = ps) }
     }
 }

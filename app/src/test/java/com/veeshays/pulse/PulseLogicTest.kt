@@ -3,6 +3,8 @@ package com.veeshays.pulse
 import com.veeshays.pulse.eq.PulseEq
 import com.veeshays.pulse.models.PersistedState
 import com.veeshays.pulse.models.Track
+import com.veeshays.pulse.playback.progressFraction
+import com.veeshays.pulse.ui.fmt
 import com.veeshays.pulse.playback.resolveResumeMs
 import com.veeshays.pulse.playback.startIndexOf
 import com.veeshays.pulse.subs.Subs
@@ -147,6 +149,30 @@ class QueueMediaTest {
         assertEquals(1, startIndexOf(tracks, "b"))
         assertEquals(0, startIndexOf(tracks, "missing"))
         assertEquals(0, startIndexOf(tracks, null))
+    }
+}
+
+class ProgressTest {
+    @Test fun half_ofKnownDuration() {
+        assertEquals(0.5f, progressFraction(60_000L, 120_000L))
+    }
+
+    @Test fun unknownDuration_rendersEmpty() {
+        assertEquals(0f, progressFraction(5_000L, 0L))
+        assertEquals(0f, progressFraction(5_000L, -1L))
+        assertEquals(0f, progressFraction(5_000L, Long.MIN_VALUE))
+    }
+
+    @Test fun clampsOutOfRange() {
+        assertEquals(0f, progressFraction(-500L, 120_000L))
+        assertEquals(1f, progressFraction(200_000L, 120_000L))
+    }
+
+    @Test fun timeFmt() {
+        assertEquals("0:00", fmt(0L))
+        assertEquals("1:05", fmt(65_000L))
+        assertEquals("61:01", fmt(3_661_000L))
+        assertEquals("—", fmt(-1L))
     }
 }
 

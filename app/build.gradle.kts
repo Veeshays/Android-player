@@ -79,9 +79,10 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 
-    // Artwork only (thumbnails + covers, memory/disk cached, no crossfade bloat).
-    implementation("io.coil-kt.coil3:coil-compose:3.0.0")
-    implementation("io.coil-kt.coil3:coil-video:3.0.0")
+    // Artwork is decoded in-house (library/Artwork.kt: system thumbnails +
+    // sampled resolver decode, LRU cache) — no image-loading libraries, which
+    // also avoids duplicate Compose-foundation packages on the classpath.
+    // (Coil 3 pulls org.jetbrains.compose.foundation and breaks lazy symbols.)
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")

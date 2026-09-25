@@ -6,7 +6,9 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 
 /**
@@ -19,6 +21,23 @@ import kotlinx.coroutines.flow.StateFlow
 object PlaybackConnection {
     private val _controller = MutableStateFlow<MediaController?>(null)
     val controller: StateFlow<MediaController?> = _controller
+
+    /** One-way diagnostics: service/player failures surface here, never silent. */
+    private val _errors = MutableSharedFlow<String>(extraBufferCapacity = 2)
+    val errors: SharedFlow<String> = _errors
+
+    /** Latest error, retained for the diagnostics screen. */
+    private val _lastError = MutableStateFlow<String?>(null)
+    val lastError: StateFlow<String?> = _lastError
+
+    fun reportError(text: String) {
+        _lastError.value = text
+        _errors.tryEmit(text)
+    }
+
+    fun clearError() {
+        _lastError.value = null
+    }
 
     private var future: ListenableFuture<MediaController>? = null
 

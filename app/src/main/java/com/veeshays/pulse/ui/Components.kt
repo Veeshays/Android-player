@@ -1,7 +1,11 @@
 package com.veeshays.pulse.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,6 +21,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Album
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.MusicNote
@@ -35,13 +41,18 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -57,15 +68,24 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import com.veeshays.pulse.PulseApp
 import com.veeshays.pulse.eq.PulseEq
+import com.veeshays.pulse.library.Artwork
 import com.veeshays.pulse.playback.PlaybackConnection
+import com.veeshays.pulse.playback.QueueEntry
+import com.veeshays.pulse.playback.persistQueueSnapshot
+import com.veeshays.pulse.playback.progressFraction
+import com.veeshays.pulse.playback.queueEntries
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import com.veeshays.pulse.models.Track
 
 /**
@@ -144,12 +164,18 @@ fun TransportRow(
 
 @Composable
 fun SeekRow(positionMs: Long, durationMs: Long, onSeek: (Long) -> Unit) {
-    var scrub by remember(positionMs) { mutableFloatStateOf(positionMs.toFloat()) }
+    // Ticks must never fight an active drag: freeze on external updates
+    // while scrubbing, commit once on release.
+    var scrubbing by remember { mutableStateOf(false) }
+    var scrub by remember { mutableFloatStateOf(positionMs.toFloat()) }
+    LaunchedEffect(positionMs) {
+        if (!scrubbing) scrub = positionMs.toFloat()
+    }
     Column(Modifier.fillMaxWidth()) {
         Slider(
             value = scrub.coerceIn(0f, durationMs.coerceAtLeast(1L).toFloat()),
-            onValueChange = { scrub = it },
-            onValueChangeFinished = { onSeek(scrub.toLong()) },
+            onValueChange = { scrub = it; scrubbing = true },
+            onValueChangeFinished = { scrubbing = false; onSeek(scrub.toLong()) },
             valueRange = 0f..durationMs.coerceAtLeast(1L).toFloat(),
             modifier = Modifier
                 .fillMaxWidth()
@@ -169,6 +195,38 @@ fun fmt(ms: Long): String {
 }
 
 /**
+ * Desktop card language, restrained for mobile: translucent panel fill +
+ * hairline accent border + 16dp radius. No blur (GPU-cheap), no heavy
+ * elevation. Dark/light both resolve from the active Pulse palette.
+ */
+@Composable
+fun GlassCard(
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null,
+    content: @Composable () -> Unit,
+) {
+    val shape = RoundedCornerShape(16.dp)
+    val colors = androidx.compose.material3.CardDefaults.cardColors(
+        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+    )
+    val border = androidx.compose.foundation.BorderStroke(
+        1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
+    )
+    if (onClick != null) {
+        androidx.compose.material3.Card(
+            onClick = onClick, modifier = modifier,
+            shape = shape, colors = colors, border = border,
+            content = { content() },
+        )
+    } else {
+        Card(
+            modifier = modifier, shape = shape, colors = colors, border = border,
+            content = { content() },
+        )
+    }
+}
+
+/**
  * Single observation point for the service-owned player. Screens read
  * [playing]/[positionMs]/[durationMs] and issue commands on [controller].
  * Position ticks run only while audible (500ms); the listener is removed
@@ -182,6 +240,11 @@ data class PlayerUiState(
     val mediaId: String?,
     val shuffle: Boolean,
     val repeat: Int, // 0 off · 1 all · 2 one (PC parity)
+    // Live metadata from the player's current item (notification truth).
+    val title: String?,
+    val artist: String?,
+    val album: String?,
+    val artUri: android.net.Uri?,
 )
 
 @Composable
@@ -193,6 +256,10 @@ fun rememberPlayerState(tickMs: Long = 500L): PlayerUiState {
     var mediaId by remember { mutableStateOf<String?>(null) }
     var shuffle by remember { mutableStateOf(false) }
     var repeat by remember { mutableStateOf(0) }
+    var title by remember { mutableStateOf<String?>(null) }
+    var artist by remember { mutableStateOf<String?>(null) }
+    var album by remember { mutableStateOf<String?>(null) }
+    var artUri by remember { mutableStateOf<android.net.Uri?>(null) }
 
     DisposableEffect(controller) {
         val c = controller ?: return@DisposableEffect onDispose {}
@@ -200,12 +267,19 @@ fun rememberPlayerState(tickMs: Long = 500L): PlayerUiState {
             playing = c.isPlaying
             positionMs = c.currentPosition.coerceAtLeast(0L)
             durationMs = c.duration.coerceAtLeast(0L)
-            mediaId = c.currentMediaItem?.mediaId
+            val item = c.currentMediaItem
+            mediaId = item?.mediaId
             shuffle = c.shuffleModeEnabled
             repeat = when (c.repeatMode) {
                 Player.REPEAT_MODE_ALL -> 1
                 Player.REPEAT_MODE_ONE -> 2
                 else -> 0
+            }
+            item?.mediaMetadata?.let { m ->
+                title = m.title?.toString()
+                artist = m.artist?.toString()
+                album = m.albumTitle?.toString()
+                artUri = m.artworkUri
             }
         }
         val listener = object : Player.Listener {
@@ -228,9 +302,10 @@ fun rememberPlayerState(tickMs: Long = 500L): PlayerUiState {
             delay(tickMs)
         }
     }
-    return PlayerUiState(controller, playing, positionMs, durationMs, mediaId, shuffle, repeat)
+    return PlayerUiState(controller, playing, positionMs, durationMs, mediaId, shuffle, repeat, title, artist, album, artUri)
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun TrackRow(
     track: Track,
@@ -250,7 +325,7 @@ fun TrackRow(
         Row(
             Modifier
                 .fillMaxWidth()
-                .clickable(onClick = onTap)
+                .combinedClickable(onClick = onTap, onLongClick = onLongPress)
                 .padding(12.dp),
             verticalAlignment = Alignment.CenterVersatility,
         ) {
@@ -267,12 +342,15 @@ fun TrackRow(
                 )
             }
             Column(Modifier.weight(1f).padding(horizontal = 8.dp)) {
-                Text(track.title, style = MaterialTheme.typography.bodyLarge, maxLines = 1)
+                Text(
+                    track.title, style = MaterialTheme.typography.bodyLarge,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
                 Text(
                     track.artist,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
             }
             if (rating > 0) Text("★$rating", style = MaterialTheme.typography.labelMedium)
@@ -310,23 +388,34 @@ fun RatingBar(rating: Int, onRate: (Int) -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun QueueSheet(onDismiss: () -> Unit) {
-    BackHandler(onBack = onDismiss) // Back closes queue first (§14)
-    val app = LocalContext.current.applicationContext as PulseApp
-    val state by app.store.state.collectAsState()
+fun QueueSheet(ps: PlayerUiState, onDismiss: () -> Unit) {
+    BackHandler(onBack = onDismiss)
+    val ctx = LocalContext.current
+    val app = ctx.applicationContext as PulseApp
+    val entries = remember(ps.controller, ps.mediaId, ps.durationMs) { queueEntries(ps.controller) }
+    val currentIdx = ps.controller?.currentMediaItemIndex ?: -1
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 16.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("Queue", style = MaterialTheme.typography.titleLarge)
-            TextButton(onClick = { app.store.update { it.copy(queue = it.queue.copy(keys = emptyList(), index = -1)) } }) {
-                Text("Clear")
-            }
+            Text(
+                if (entries.isEmpty()) "Queue" else "Queue (${entries.size})",
+                style = MaterialTheme.typography.titleLarge,
+            )
+            TextButton(
+                onClick = {
+                    ps.controller?.let { c ->
+                        c.stop()
+                        c.clearMediaItems()
+                        persistQueueSnapshot(app.store, c)
+                    }
+                },
+                enabled = entries.isNotEmpty(),
+            ) { Text("Clear") }
         }
-        val keys = state.queue.keys
-        if (keys.isEmpty()) {
+        if (entries.isEmpty()) {
             Text(
                 "Queue is empty — pick anything from Library.",
                 Modifier.padding(24.dp),
@@ -334,23 +423,26 @@ fun QueueSheet(onDismiss: () -> Unit) {
             )
         } else {
             LazyColumn(Modifier.fillMaxWidth()) {
-                items(keys, key = { it }) { key ->
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(key.substringAfterLast('/').substringBeforeLast('.'), maxLines = 1)
-                        }
-                        TextButton(onClick = { /* play-next handled by service queue */ }) { Text("Next") }
-                        TextButton(onClick = {
-                            app.store.update { s ->
-                                s.copy(queue = s.queue.copy(keys = s.queue.keys - key))
+                items(entries.indices.toList(), key = { entries[it].key }) { idx ->
+                    val e = entries[idx]
+                    QueueRow(
+                        entry = e,
+                        current = idx == currentIdx,
+                        playing = idx == currentIdx && ps.playing,
+                        onTap = {
+                            ps.controller?.let { c ->
+                                c.seekTo(idx, 0)
+                                c.play()
+                                persistQueueSnapshot(app.store, c)
                             }
-                        }) { Text("Remove") }
-                    }
+                        },
+                        onRemove = {
+                            ps.controller?.let { c ->
+                                c.removeMediaItem(idx)
+                                persistQueueSnapshot(app.store, c)
+                            }
+                        },
+                    )
                 }
             }
         }
@@ -360,33 +452,238 @@ fun QueueSheet(onDismiss: () -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ContextSheet(key: String, onDismiss: () -> Unit) {
-    BackHandler(onBack = onDismiss) // open sheet dismisses first (§14)
+private fun QueueRow(entry: QueueEntry, current: Boolean, playing: Boolean, onTap: () -> Unit, onRemove: () -> Unit) {
+    // Swipe-to-remove; the delete button is the non-gesture alternative.
+    val dismiss = rememberSwipeToDismissBoxState(
+        confirmValueChange = { it != SwipeToDismissBoxValue.Settled },
+    )
+    var dismissed by remember { mutableStateOf(false) }
+    LaunchedEffect(dismiss.currentValue) {
+        if (dismiss.currentValue != SwipeToDismissBoxValue.Settled && !dismissed) {
+            dismissed = true
+            onRemove()
+        }
+    }
+    SwipeToDismissBox(
+        state = dismiss,
+        enableDismissFromStartToEnd = false,
+        backgroundContent = {
+            Box(
+                Modifier.fillMaxSize().background(MaterialTheme.colorScheme.errorContainer),
+                contentAlignment = Alignment.CenterEnd,
+            ) {
+                Icon(Icons.Filled.Delete, contentDescription = "Remove", modifier = Modifier.padding(end = 16.dp))
+            }
+        },
+        content = {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onTap)
+                    .background(MaterialTheme.colorScheme.surface)
+                    .padding(horizontal = 16.dp, vertical = 10.dp)
+                    .semantics { contentDescription = "${entry.title} by ${entry.artist}${if (current) ", current" else ""}" },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    if (playing) Icons.Filled.Equalizer else Icons.Filled.MusicNote,
+                    contentDescription = null,
+                    tint = if (current) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(24.dp),
+                )
+                Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                    Text(
+                        entry.title, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = if (current) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        entry.artist.ifBlank { "Unknown artist" }, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                IconButton(
+                    onClick = onRemove,
+                    modifier = Modifier.size(48.dp).semantics { contentDescription = "Remove ${entry.title}" },
+                ) { Icon(Icons.Filled.Delete, null) }
+            }
+        },
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ContextSheet(key: String, ps: PlayerUiState, onDismiss: () -> Unit) {
+    BackHandler(onBack = onDismiss)
     val app = LocalContext.current.applicationContext as PulseApp
+    val state by app.store.state.collectAsState()
+    val entries = remember(ps.controller, ps.mediaId, ps.durationMs) { queueEntries(ps.controller) }
+    val idx = entries.indexOfFirst { it.key == key }
+    val cur = ps.controller?.currentMediaItemIndex ?: -1
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(key.substringAfterLast('/'), style = MaterialTheme.typography.titleMedium, maxLines = 2)
-            TextButton(onClick = { app.store.update { it }; onDismiss() }) {
+            Text(key.substringAfterLast('/'), style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            TextButton(
+                onClick = {
+                    ps.controller?.let { c ->
+                        if (idx >= 0) {
+                            c.seekTo(idx, 0)
+                            c.play()
+                            persistQueueSnapshot(app.store, c)
+                        }
+                    }
+                    onDismiss()
+                },
+                enabled = idx >= 0,
+            ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Filled.PlayArrow, null); Text("Play")
                 }
             }
-            TextButton(onClick = { app.store.update { it }; onDismiss() }) {
+            TextButton(
+                onClick = {
+                    ps.controller?.let { c ->
+                        if (idx >= 0) {
+                            c.moveMediaItem(idx, (cur + 1).coerceIn(0, c.mediaItemCount))
+                            persistQueueSnapshot(app.store, c)
+                        }
+                    }
+                    onDismiss()
+                },
+                enabled = idx >= 0 && idx != cur,
+            ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Filled.NextPlan, null); Text("Play next")
                 }
             }
-            TextButton(onClick = { app.store.update { it }; onDismiss() }) {
+            TextButton(
+                onClick = {
+                    ps.controller?.let { c ->
+                        if (idx >= 0) {
+                            c.removeMediaItem(idx)
+                            persistQueueSnapshot(app.store, c)
+                        }
+                    }
+                    onDismiss()
+                },
+                enabled = idx >= 0,
+            ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Filled.FavoriteBorder, null); Text("Toggle favorite")
+                    Icon(Icons.Filled.Delete, null); Text("Remove from queue")
                 }
             }
-            TextButton(onClick = { app.store.update { it }; onDismiss() }) {
+            TextButton(onClick = {
+                app.store.update { s ->
+                    s.copy(favTracks = if (key in s.favTracks) s.favTracks - key else s.favTracks + key)
+                }
+                onDismiss()
+            }) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Filled.StarBorder, null); Text("Rate…")
+                    Icon(
+                        if (key in state.favTracks) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                        null,
+                    )
+                    Text(if (key in state.favTracks) "Unfavorite" else "Favorite")
                 }
             }
+            RatingBar(
+                rating = state.ratings[key] ?: 0,
+                onRate = { stars ->
+                    app.store.update { s ->
+                        s.copy(ratings = if (stars == 0) s.ratings - key else s.ratings + (key to stars))
+                    }
+                },
+            )
             Spacer(Modifier.height(16.dp))
+        }
+    }
+}
+
+/** Artwork thumb with icon fallback showing through on load failure. */
+@Composable
+fun ArtThumb(artUri: android.net.Uri?, size: androidx.compose.ui.unit.Dp, desc: String?) {
+    val ctx = LocalContext.current
+    Box(
+        Modifier
+            .size(size)
+            .clip(RoundedCornerShape(9.dp))
+            .background(MaterialTheme.colorScheme.primaryContainer),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(Icons.Filled.MusicNote, contentDescription = null, modifier = Modifier.size(size * 0.5f))
+        if (artUri != null) {
+            var bmp by remember(artUri) { mutableStateOf(Artwork.cached(artUri.toString())) }
+            LaunchedEffect(artUri) {
+                if (bmp == null) {
+                    bmp = withContext(Dispatchers.IO) {
+                        Artwork.load(ctx.contentResolver, artUri)
+                    }
+                }
+            }
+            bmp?.let {
+                Image(
+                    bitmap = it.asImageBitmap(),
+                    contentDescription = desc,
+                    modifier = Modifier
+                        .size(size)
+                        .clip(RoundedCornerShape(9.dp)),
+                    contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                )
+            }
+        }
+    }
+}
+
+/** Slim persistent bar for non-Player tabs: progress + identity + play/next. */
+@Composable
+fun MiniPlayer(ps: PlayerUiState, onOpenPlayer: () -> Unit) {
+    val c = ps.controller ?: return
+    if (ps.mediaId == null) return
+    val progress = progressFraction(ps.positionMs, ps.durationMs)
+    Surface(
+        tonalElevation = 3.dp,
+        modifier = Modifier.semantics { contentDescription = "Now playing mini player" },
+    ) {
+        Column {
+            LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onOpenPlayer)
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ArtThumb(ps.artUri, 44.dp, "Cover art")
+                Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
+                    Text(
+                        ps.title ?: Brand.Copy.NOTHING_PLAYING,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                    Text(
+                        ps.artist ?: Brand.Copy.ADD_TO_START,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                IconButton(
+                    onClick = { if (c.isPlaying) c.pause() else c.play() },
+                    modifier = Modifier.size(48.dp).semantics {
+                        contentDescription = if (ps.playing) "Pause" else "Play"
+                    },
+                ) {
+                    Icon(
+                        if (ps.playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                        null, modifier = Modifier.size(30.dp),
+                    )
+                }
+                IconButton(
+                    onClick = { c.seekToNextMediaItem() },
+                    modifier = Modifier.size(48.dp).semantics { contentDescription = "Next track" },
+                ) { Icon(Icons.Filled.SkipNext, null) }
+            }
         }
     }
 }

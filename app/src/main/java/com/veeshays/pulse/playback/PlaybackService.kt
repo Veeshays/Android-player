@@ -22,6 +22,8 @@ import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import com.veeshays.pulse.core.classify
+import com.veeshays.pulse.core.message
 import com.veeshays.pulse.store.PulseStore
 import com.veeshays.pulse.ui.Brand
 import kotlinx.coroutines.CoroutineScope
@@ -107,15 +109,30 @@ class PlaybackService : MediaSessionService() {
 
         override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
             persistPosition()
-            scope.launch { store.load() }
-            // History + play-count + notification metadata update happen here
-            // via the MediaSession timeline (single source, no duplicates).
+            // NOTE: never store.load() here — reloading disk state would clobber
+            // live UI edits (shuffle toggles, queue edits) not yet flushed.
+            val key = item?.mediaId ?: return
+            scope.launch {
+                store.update { s ->
+                    s.copy(
+                        history = (s.history - key + key).takeLast(100),
+                        playCounts = s.playCounts + (key to minOf(99999, (s.playCounts[key] ?: 0) + 1)),
+                    )
+                }
+            }
         }
 
         override fun onPlayerError(error: PlaybackException) {
-            // Never crash on one broken file: skip forward once; UI surfaces
-            // a concise message (Errors.kt), never a stack trace.
-            player?.seekToNextMediaItem()
+            // One broken file never kills playback — but it is never silent
+            // either: the UI announces what happened via the error channel.
+            val p = player
+            if (p != null && p.hasNextMediaItem()) {
+                p.seekToNextMediaItem()
+                PlaybackConnection.reportError(message(classify(error)))
+            } else {
+                p?.pause()
+                PlaybackConnection.reportError("Couldn't play this file — stopped safely")
+            }
         }
 
         override fun onPlaybackStateChanged(state: Int) {

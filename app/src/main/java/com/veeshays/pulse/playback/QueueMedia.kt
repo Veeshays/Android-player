@@ -3,7 +3,9 @@ package com.veeshays.pulse.playback
 import android.net.Uri
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.session.MediaController
 import com.veeshays.pulse.models.Track
+import com.veeshays.pulse.store.PulseStore
 
 /**
  * Translates a library view (the queue-follows-view snapshot) into the
@@ -40,6 +42,33 @@ fun resolveResumeMs(track: Track, positions: Map<String, Long>): Long? =
 /** Start index of [startKey] inside [tracks], 0 when absent (never -1). */
 fun startIndexOf(tracks: List<Track>, startKey: String?): Int =
     tracks.indexOfFirst { it.key == startKey }.takeIf { it >= 0 } ?: 0
+
+/** Seek-bar fraction from live player values; unknown duration renders empty, never NaN. */
+fun progressFraction(positionMs: Long, durationMs: Long): Float =
+    if (durationMs <= 0) 0f else (positionMs.toFloat() / durationMs).coerceIn(0f, 1f)
+
+/** One controller-playlist row, with display metadata for queue/notification truth. */
+data class QueueEntry(val key: String, val title: String, val artist: String)
+
+/** Reads the live player playlist (titles included) — thin, no caching. */
+fun queueEntries(c: MediaController?): List<QueueEntry> {
+    if (c == null) return emptyList()
+    return (0 until c.mediaItemCount).map { i ->
+        val m = c.getMediaItemAt(i)
+        QueueEntry(
+            key = m.mediaId,
+            title = m.mediaMetadata.title?.toString().orEmpty()
+                .ifBlank { m.mediaId.substringAfterLast('/').substringBeforeLast('.') },
+            artist = m.mediaMetadata.artist?.toString().orEmpty(),
+        )
+    }
+}
+
+/** Mirrors the live controller playlist back into the persisted snapshot. */
+fun persistQueueSnapshot(store: PulseStore, c: MediaController) {
+    val keys = (0 until c.mediaItemCount).map { c.getMediaItemAt(it).mediaId }
+    store.update { it.copy(queue = it.queue.copy(keys = keys, index = c.currentMediaItemIndex)) }
+}
 
 /** Sentinel re-export so UI call sites don't import ExoPlayer constants. */
 val TIME_UNSET: Long = C.TIME_UNSET
