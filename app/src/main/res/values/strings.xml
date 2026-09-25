@@ -1,0 +1,4 @@
+<resources>
+    <!-- Display label mirrors Brand.NAME; rebrand = change here + Brand.kt. -->
+    <string name="app_name">PupPlay</string>
+</resources>

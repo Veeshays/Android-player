@@ -1,0 +1,4 @@
+<resources>
+    <!-- Launcher icon background: Pulse Aura accent (see Brand.kt). -->
+    <color name="ic_launcher_background">#7C6CFF</color>
+</resources>

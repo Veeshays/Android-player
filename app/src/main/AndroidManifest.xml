@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Only the permissions playback actually needs. No location, no accounts, no ads SDKs. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Modern scoped-media permissions (API 33+). -->
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <!-- Legacy fallback for API 26–32 (maxSdkVersion keeps it off on 33+). -->
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+
+    <!-- Background playback + notification controls. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"
+        android:usesPermissionFlags="neverForLocation"
+        android:minSdkVersion="31" />
+
+    <application
+        android:name=".PulseApp"
+        android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:theme="@style/Theme.Pulse"
+        android:allowBackup="true"
+        android:supportsRtl="true"
+        android:largeHeap="false">
+
+        <activity
+            android:name=".ui.MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize|density"
+            android:supportsPictureInPicture="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- NOTE: no VIEW/open-with filter yet — MainActivity does not handle
+                 external intents, so none is advertised (revisit in polish pass). -->
+        </activity>
+
+        <!-- Playback lives here, not in the Activity: survives minimize/lock/app-switch. -->
+        <service
+            android:name=".playback.PlaybackService"
+            android:foregroundServiceType="mediaPlayback"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="androidx.media3.session.MediaSessionService" />
+                <action android:name="android.media.browse.MediaBrowserService" />
+            </intent-filter>
+        </service>
+
+        <receiver
+            android:name=".playback.NoisyReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.media.AUDIO_BECOMING_NOISY" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

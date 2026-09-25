@@ -1,0 +1,9 @@
+<resources>
+    <!-- Splash attributes are API 31+; base theme in values/ stays clean for 26–30. -->
+    <style name="Theme.Pulse" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowSplashScreenBackground">#0C0C13</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>
