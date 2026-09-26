@@ -14,6 +14,19 @@ Living list. Updated 2026-09-25. Device-verified items move out; new findings mo
   could not bind under Robolectric's manifest parsing), (2) content-URI
   readability on that device, (3) audio focus/output routing on that device.
 
+## Media-model verdict (proven via MediaStoreForensicTest 12/12)
+
+- Cursor → Track → MediaItem preserves full content-URI identity everywhere:
+  `mediaId` = content URI, `localConfiguration.uri` = same playable URI,
+  metadata intact. `requestMetadata.mediaUri` is legitimately null for
+  directly-built items (records redirect origins, unused for local files).
+- Persistence round-trips full URIs (queue/history/positions/ratings/favs).
+- The "8890" display came from URI-tail fallbacks rendering numeric MediaStore
+  ID tails as titles (hero after restart with empty controller; queue rows with
+  blank metadata). Fixed: both now show honest empty/unknown states, and a
+  duplicate hero artwork layer was removed.
+- Numerically-named files ("8890.mp3") keep filename identity consistently.
+
 ## Decisive on-device protocol (do this first on hardware)
 
 1. Install debug APK, Fetch, open Settings → Playback diagnostics.

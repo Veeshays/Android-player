@@ -57,8 +57,9 @@ fun queueEntries(c: MediaController?): List<QueueEntry> {
         val m = c.getMediaItemAt(i)
         QueueEntry(
             key = m.mediaId,
-            title = m.mediaMetadata.title?.toString().orEmpty()
-                .ifBlank { m.mediaId.substringAfterLast('/').substringBeforeLast('.') },
+            // Never derive display text from the URI tail (numeric MediaStore
+            // IDs like "8890" are not titles); blank metadata stays blank.
+            title = m.mediaMetadata.title?.toString().orEmpty().ifBlank { "Unknown title" },
             artist = m.mediaMetadata.artist?.toString().orEmpty(),
         )
     }

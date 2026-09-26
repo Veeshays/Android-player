@@ -91,7 +91,7 @@ class MediaLibrary(context: Context) {
         }
     }
 
-    private data class Collection(
+    internal data class Collection(
         val tracks: List<Track>,
         val skipped: Int,
         val unreadable: Int,
@@ -103,11 +103,6 @@ class MediaLibrary(context: Context) {
         isVideo: Boolean,
         onProgress: (Int) -> Unit,
     ): Collection {
-        val seen = LinkedHashMap<String, Track>() // stable-URI dedupe, query order kept
-        var skipped = 0
-        var unreadable = 0
-        var truncated = false
-        var rows = 0
         val proj = arrayOf(
             MediaStore.MediaColumns._ID,
             MediaStore.MediaColumns.DISPLAY_NAME,
@@ -118,35 +113,56 @@ class MediaLibrary(context: Context) {
             MediaStore.MediaColumns.SIZE,
             MediaStore.MediaColumns.DATE_ADDED,
         )
+        var result = Collection(emptyList(), 0, 0, false)
         runCatching {
             appContext.contentResolver.query(
                 uri, proj,
                 "${MediaStore.MediaColumns.DURATION} > 0",
                 null,
                 "${MediaStore.MediaColumns.DATE_ADDED} DESC",
-            )?.use { c ->
-                val idx = ColumnIdx(c, proj)
-                while (c.moveToNext()) {
-                    rows++
-                    if (rows % 100 == 0) {
-                        currentCoroutineContext().ensureActive() // cooperative cancellation point
-                        onProgress(rows)
-                    }
-                    val track = runCatching { mapRow(c, idx, uri, isVideo) }.getOrNull()
-                    if (track == null) {
-                        unreadable++ // malformed row tolerated, scan continues
-                        continue
-                    }
-                    if (track == UNSUPPORTED) {
-                        skipped++
-                        continue
-                    }
-                    seen.putIfAbsent(track.key, track) // first wins: stable identity
-                    if (seen.size >= MAX_ITEMS) {
-                        truncated = true
-                        break
-                    }
-                }
+            )?.use { c -> result = mapRows(c, uri, isVideo, onProgress) }
+        }
+        return result
+    }
+
+    /**
+     * Cursor → library rows. Pure mapping over an open cursor (no resolver):
+     * stable-URI dedupe, per-row isolation (one malformed row never aborts the
+     * collection), 20k cap, throttled progress + cooperative cancellation.
+     * Separated from the query so the mapping contract is directly testable
+     * with a MatrixCursor.
+     */
+    internal suspend fun mapRows(
+        c: Cursor,
+        volume: Uri,
+        isVideo: Boolean,
+        onProgress: (Int) -> Unit = {},
+    ): Collection {
+        val seen = LinkedHashMap<String, Track>() // stable-URI dedupe, cursor order kept
+        var skipped = 0
+        var unreadable = 0
+        var truncated = false
+        var rows = 0
+        val idx = ColumnIdx.forCursor(c)
+        while (c.moveToNext()) {
+            rows++
+            if (rows % 100 == 0) {
+                currentCoroutineContext().ensureActive() // cooperative cancellation point
+                onProgress(rows)
+            }
+            val track = runCatching { mapRow(c, idx, volume, isVideo) }.getOrNull()
+            if (track == null) {
+                unreadable++ // malformed row tolerated, scan continues
+                continue
+            }
+            if (track == UNSUPPORTED) {
+                skipped++
+                continue
+            }
+            seen.putIfAbsent(track.key, track) // first wins: stable identity
+            if (seen.size >= MAX_ITEMS) {
+                truncated = true
+                break
             }
         }
         return Collection(seen.values.toList(), skipped, unreadable, truncated)
@@ -162,6 +178,20 @@ class MediaLibrary(context: Context) {
             c.getColumnIndexOrThrow(proj[4]), c.getColumnIndexOrThrow(proj[5]),
             c.getColumnIndexOrThrow(proj[6]), c.getColumnIndexOrThrow(proj[7]),
         )
+
+        companion object {
+            /** Name-based lookup: immune to projection ordering. */
+            fun forCursor(c: Cursor): ColumnIdx = ColumnIdx(
+                c.getColumnIndexOrThrow(MediaStore.MediaColumns._ID),
+                c.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME),
+                c.getColumnIndexOrThrow(MediaStore.MediaColumns.TITLE),
+                c.getColumnIndexOrThrow(MediaStore.MediaColumns.ARTIST),
+                c.getColumnIndexOrThrow(MediaStore.MediaColumns.ALBUM),
+                c.getColumnIndexOrThrow(MediaStore.MediaColumns.DURATION),
+                c.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE),
+                c.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_ADDED),
+            )
+        }
     }
 
     /** Maps one cursor row; returns UNSUPPORTED for filtered extensions. Throws on malformed rows. */

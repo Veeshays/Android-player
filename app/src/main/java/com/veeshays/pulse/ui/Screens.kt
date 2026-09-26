@@ -190,7 +190,7 @@ private fun PlayerHero(ps: PlayerUiState) {
     val app = LocalContext.current.applicationContext as PulseApp
     val state by app.store.state.collectAsState()
     val key = ps.mediaId ?: state.queue.keys.getOrNull(state.queue.index)
-    val title = ps.title?.ifBlank { null } ?: key?.substringAfterLast('/')?.substringBeforeLast('.')
+    val title = ps.title?.ifBlank { null }
     GlassCard(Modifier.fillMaxWidth()) {
         Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             // Artwork with a soft accent glow (desktop hero treatment, one static layer).
@@ -203,17 +203,18 @@ private fun PlayerHero(ps: PlayerUiState) {
             ) {
                 ArtThumb(ps.artUri, 96.dp, "Cover art")
             }
-            ArtThumb(ps.artUri, 96.dp, "Cover art")
             Column(Modifier.weight(1f).padding(start = 12.dp)) {
                 Text(
-                    title ?: Brand.Copy.NOTHING_PLAYING,
+                    // Never render a URI tail ("8890") as a title: without live
+                    // metadata there is nothing truthful to show.
+                    title ?: if (key == null) Brand.Copy.NOTHING_PLAYING else "Unknown title",
                     style = MaterialTheme.typography.titleLarge,
                     maxLines = 2, overflow = TextOverflow.Ellipsis,
                 )
                 Text(
                     ps.artist?.ifBlank { null }
                         ?: ps.album?.ifBlank { null }
-                        ?: if (key == null) Brand.Copy.ADD_TO_START else "PupPlay library",
+                        ?: Brand.Copy.ADD_TO_START,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 2, overflow = TextOverflow.Ellipsis,
