@@ -162,10 +162,12 @@ fun TransportRow(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun SeekRow(positionMs: Long, durationMs: Long, onSeek: (Long) -> Unit) {
     // Ticks must never fight an active drag: freeze on external updates
-    // while scrubbing, commit once on release.
+    // while scrubbing, commit once on release. Thin 4dp visual track is the
+    // Material3 default (thumb 20dp, 48dp touch floor kept).
     var scrubbing by remember { mutableStateOf(false) }
     var scrub by remember { mutableFloatStateOf(positionMs.toFloat()) }
     LaunchedEffect(positionMs) {

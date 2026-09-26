@@ -83,14 +83,57 @@ class PlaybackEngineTest {
         assertEquals(Player.STATE_IDLE, p.playbackState)
     }
 
-    @Test fun toneUri_usesPackageScopedResourceScheme() {
-        // The diagnostics tone addresses the bundled fixture by package-scoped
-        // android.resource URI (works for both .debug and release IDs). The
-        // fixture's presence in the APK was verified separately via zip listing.
-        for (pkg in listOf("com.veeshays.pulse.debug", "com.veeshays.pulse")) {
-            val uri = "android.resource://$pkg/raw/probe_tone"
-            assertTrue(uri.startsWith("android.resource://"))
-            assertTrue(uri.endsWith("/raw/probe_tone"))
+    @Test fun toneGoesThroughPlainFileUri() {
+        // The diagnostics tone must use a FileDataSource-readable file:// URI:
+        // custom schemes (e.g. pupplay://) have no DataSource and stall in
+        // BUFFERING. Only the stable mediaId may carry the pupplay:// label.
+        val file = File(app.cacheDir, "probe_tone.wav")
+        file.writeBytes(javaClass.classLoader!!.getResource("probe_tone.wav")!!.readBytes())
+        val uri = Uri.fromFile(file)
+        assertEquals("file", uri.scheme)
+        val p = player()
+        val probe = Probe()
+        p.addListener(probe)
+        try {
+            val item = MediaItem.Builder()
+                .setMediaId("pupplay://probe-tone")
+                .setUri(uri)
+                .build()
+            // Identity label survives; playable URI is the file.
+            assertEquals("pupplay://probe-tone", item.mediaId)
+            assertEquals(uri, item.localConfiguration!!.uri)
+            p.setMediaItem(item)
+            p.prepare()
+            val ok = pumpFor(match = {
+                p.playbackState == Player.STATE_READY || p.playbackState == Player.STATE_ENDED
+            })
+            assertNull("player error: ${probe.error}", probe.error)
+            assertTrue("file tone never left buffering", ok)
+        } finally {
+            p.removeListener(probe)
+            p.stop()
+        }
+    }
+
+    @Test fun unsupportedScheme_failsExplicitlyNeverSilent() {
+        // Regression: an unresolvable custom scheme must surface an error, not
+        // sit in BUFFERING forever looking like a static player.
+        val p = player()
+        val probe = Probe()
+        p.addListener(probe)
+        try {
+            p.setMediaItem(MediaItem.fromUri(Uri.parse("pupplay://no-such-source")))
+            p.prepare()
+            val done = pumpFor(timeoutMs = 20000, match = {
+                probe.error != null || p.playbackState == Player.STATE_IDLE
+            })
+            assertTrue(
+                "unsupported scheme stayed silent (state=${p.playbackState})",
+                done && probe.error != null,
+            )
+        } finally {
+            p.removeListener(probe)
+            p.stop()
         }
     }
 

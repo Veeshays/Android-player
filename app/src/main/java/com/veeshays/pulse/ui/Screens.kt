@@ -75,6 +75,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -466,7 +467,12 @@ fun LibraryScreen(ps: PlayerUiState, onOpenSheet: (String) -> Unit, onOpenVideo:
         }
         val flatCount = groups?.sumOf { it.second.size } ?: ordered.size
         val unit = if (mode == "Videos") "videos" else "tracks"
-        Text("$flatCount $unit", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        // Desktop hierarchy nod: letterspaced small-caps count line.
+        Text(
+            "$flatCount $unit".uppercase(),
+            style = MaterialTheme.typography.labelMedium.copy(letterSpacing = 1.5.sp),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
 
         @Composable
         fun queueRow(t: Track, list: List<Track>) {

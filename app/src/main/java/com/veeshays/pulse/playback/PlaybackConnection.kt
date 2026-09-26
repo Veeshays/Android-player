@@ -30,6 +30,14 @@ object PlaybackConnection {
     private val _lastError = MutableStateFlow<String?>(null)
     val lastError: StateFlow<String?> = _lastError
 
+    /** Player state transition history (newest last, capped): stalls stay visible. */
+    private val _transitions = MutableStateFlow<List<String>>(emptyList())
+    val transitions: StateFlow<List<String>> = _transitions
+
+    fun recordTransition(entry: String) {
+        _transitions.value = (_transitions.value + entry).takeLast(12)
+    }
+
     fun reportError(text: String) {
         _lastError.value = text
         _errors.tryEmit(text)

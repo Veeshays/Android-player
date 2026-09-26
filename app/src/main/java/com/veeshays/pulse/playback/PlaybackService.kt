@@ -136,9 +136,22 @@ class PlaybackService : MediaSessionService() {
         }
 
         override fun onPlaybackStateChanged(state: Int) {
+            val name = when (state) {
+                Player.STATE_IDLE -> "IDLE"
+                Player.STATE_BUFFERING -> "BUFFERING"
+                Player.STATE_READY -> "READY"
+                Player.STATE_ENDED -> "ENDED"
+                else -> "S$state"
+            }
+            val p = player
+            // Transition history keeps stalls visible: a player stuck in
+            // BUFFERING (or flapping IDLE) can no longer look merely "quiet".
+            PlaybackConnection.recordTransition(
+                "$name ready=${p?.playWhenReady} pos=${p?.currentPosition} dur=${p?.duration}",
+            )
             if (state == Player.STATE_ENDED) {
                 persistPosition(clear = true)
-                if (player?.mediaItemCount == 0) player?.setForegroundMode(false)
+                if (p?.mediaItemCount == 0) p.setForegroundMode(false)
             }
         }
     }

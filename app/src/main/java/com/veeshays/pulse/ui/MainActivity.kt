@@ -18,6 +18,7 @@ import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
@@ -31,8 +32,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.dp
 import com.veeshays.pulse.PulseApp
 import com.veeshays.pulse.playback.PlaybackConnection
 import com.veeshays.pulse.ui.SunEffect
@@ -123,6 +128,18 @@ private fun PulseScaffold(startScreen: String?) {
         modifier = Modifier.fillMaxSize(),
         topBar = {
             CenterAlignedTopAppBar(
+                // Paw = PupPlay app mark (TalkBack names the app); the title
+                // names the current section (PopTune/Library/PupScreen/...).
+                navigationIcon = {
+                    Box(
+                        Modifier
+                            .padding(start = 4.dp)
+                            .semantics { contentDescription = "PupPlay" },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(Brand.Labels.PAW, style = MaterialTheme.typography.titleLarge)
+                    }
+                },
                 title = {
                     Text(
                         when (dest) {

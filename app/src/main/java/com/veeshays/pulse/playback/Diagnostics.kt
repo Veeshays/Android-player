@@ -56,6 +56,7 @@ fun DiagnosticsCard(ps: PlayerUiState) {
     val scope = rememberCoroutineScope()
 
     val c = ps.controller
+    val transitions by PlaybackConnection.transitions.collectAsState()
     val stateName = when (c?.playbackState) {        Player.STATE_IDLE -> "idle"
         Player.STATE_BUFFERING -> "buffering"
         Player.STATE_READY -> "ready"
@@ -105,6 +106,13 @@ fun DiagnosticsCard(ps: PlayerUiState) {
                 Spacer(Modifier.height(4.dp))
                 Text(it, style = MaterialTheme.typography.bodySmall)
             }
+            if (transitions.isNotEmpty()) {
+                Spacer(Modifier.height(4.dp))
+                Text("Transitions (newest last):", style = MaterialTheme.typography.labelMedium)
+                transitions.takeLast(5).forEach {
+                    Text(it, style = MaterialTheme.typography.bodySmall)
+                }
+            }
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
@@ -115,12 +123,14 @@ fun DiagnosticsCard(ps: PlayerUiState) {
                     val report = buildString {
                         appendLine("PupPlay diagnostics")
                         appendLine("engine=${if (c == null) "null" else "ok"} state=$stateName")
+                        appendLine("playWhenReady=${c?.playWhenReady} playing=${c?.isPlaying}")
                         appendLine("timeline=${c?.mediaItemCount} idx=${c?.currentMediaItemIndex}")
                         appendLine("media=${ps.mediaId}")
                         appendLine("pos=${ps.positionMs} dur=${ps.durationMs}")
                         appendLine(audioLine())
                         appendLine("error=$lastError")
                         appendLine("probe=$probe")
+                        appendLine("transitions=${transitions.takeLast(5)}")
                     }
                     try {
                         val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -140,9 +150,10 @@ fun DiagnosticsCard(ps: PlayerUiState) {
                     CircularProgressIndicator()
                 }
             }
-            // Self-test: known-good bundled WAV through the SAME controller →
-            // service → ExoPlayer path as library taps. Tone audible ⇒ engine
-            // OK and MediaStore URIs are suspect; tone silent ⇒ engine broken.
+            // Self-test: known-good bundled WAV (copied once to a plain file)
+            // through the SAME controller → service → ExoPlayer path as
+            // library taps. Tone audible ⇒ engine OK and MediaStore URIs are
+            // suspect; tone silent ⇒ engine broken.
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = {
@@ -153,7 +164,7 @@ fun DiagnosticsCard(ps: PlayerUiState) {
                         return@Button
                     }
                     runCatching {
-                        val uri = Uri.parse("android.resource://${ctx.packageName}/raw/probe_tone")
+                        val uri = Uri.fromFile(toneFile(ctx))
                         val item = MediaItem.Builder()
                             .setMediaId("pupplay://probe-tone")
                             .setUri(uri)
@@ -217,3 +228,21 @@ private suspend fun probeCurrent(ctx: Context, mediaId: String?): String =
             "UNREADABLE (${e.javaClass.simpleName}) — file may be gone"
         }
     }
+
+/**
+ * Self-test tone as a bulletproof file:// URI: the bundled WAV is copied once
+ * into cache (never user media, 441KB, deleted with app data). FileDataSource
+ * is the simplest possible DataSource — no resource-table or provider layers
+ * between the test and the player.
+ */
+fun toneFile(context: Context): java.io.File {
+    val out = java.io.File(context.cacheDir, "probe_tone.wav")
+    if (!out.exists() || out.length() == 0L) {
+        context.resources.openRawResource(
+            context.resources.getIdentifier("probe_tone", "raw", context.packageName),
+        ).use { src ->
+            out.outputStream().use { dst -> src.copyTo(dst) }
+        }
+    }
+    return out
+}
