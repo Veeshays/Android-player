@@ -73,3 +73,23 @@ fun persistQueueSnapshot(store: PulseStore, c: MediaController) {
 
 /** Sentinel re-export so UI call sites don't import ExoPlayer constants. */
 val TIME_UNSET: Long = C.TIME_UNSET
+
+/** Stable identity of the bundled self-test tone (a LABEL, never a source). */
+const val TONE_MEDIA_ID = "pupplay://probe-tone"
+
+/**
+ * Session resolution contract (§3): given a requested media identity, decide
+ * the playable URI. Rules, in order:
+ *  - tone identity → caller-supplied tone file URI (no custom scheme is ever
+ *    playable; the label only identifies).
+ *  - content:// or file:// identity → itself (canonical local sources).
+ *  - anything else (bare IDs, titles, unknown schemes) → null: unresolvable,
+ *    must be reported, never guessed.
+ * Pure + unit-tested.
+ */
+fun resolveIdentityToUri(mediaId: String, toneFileUri: () -> Uri?): Uri? = when {
+    mediaId == TONE_MEDIA_ID -> runCatching { toneFileUri() }.getOrNull()
+    mediaId.startsWith("content://") -> runCatching { Uri.parse(mediaId) }.getOrNull()
+    mediaId.startsWith("file://") -> runCatching { Uri.parse(mediaId) }.getOrNull()
+    else -> null
+}

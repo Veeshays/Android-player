@@ -92,6 +92,12 @@ class PlaybackService : MediaSessionService() {
         session = MediaSession.Builder(this, player!!)
             .setCallback(SessionCallback())
             .build()
+        // Lifecycle proof: instance IDs pin every later observation to THESE
+        // exact objects (same service/player/session or it didn't happen).
+        PlaybackConnection.recordTransition(
+            "SERVICE onCreate service=${this.hashCode()} " +
+                "player=${player.hashCode()} session=${session.hashCode()}",
+        )
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
@@ -103,11 +109,41 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        PlaybackConnection.recordTransition("SERVICE onDestroy service=${this.hashCode()}")
         scope.launch { store.flush() }
         session?.run { release(); session = null }
         player?.run { removeListener(serviceListener); release(); player = null }
         scope.cancel()
         super.onDestroy()
+    }
+
+    /**
+     * Diagnostic isolation path (§2): play the file tone DIRECTLY on this
+     * service's ExoPlayer with no MediaController involved. Started via
+     * startService with ACTION_DIAG_PLAY; uses the same instance the session
+     * wraps (never a parallel player). Temporary diagnostic, not architecture.
+     */
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_DIAG_PLAY) {
+            val p = player
+            if (p == null) {
+                PlaybackConnection.reportError("diag play: player gone (service dying?)")
+            } else {
+                runCatching {
+                    val uri = Uri.fromFile(toneFile(applicationContext))
+                    p.setMediaItem(MediaItem.fromUri(uri))
+                    p.prepare()
+                    p.play()
+                    PlaybackConnection.recordTransition(
+                        "DIAG direct play player=${p.hashCode()} uri=$uri",
+                    )
+                }.onFailure {
+                    PlaybackConnection.reportError("diag play failed: ${it.message}")
+                }
+            }
+            return START_NOT_STICKY
+        }
+        return super.onStartCommand(intent, flags, startId)
     }
 
     private val serviceListener = object : Player.Listener {
@@ -197,20 +233,37 @@ class PlaybackService : MediaSessionService() {
             playerCommand: Int,
         ): Int = playerCommand
 
-        // Session-level guard for §6: items must arrive playable (URI in
-        // localConfiguration). A metadata-only item can never reach the
-        // player silently — it is announced instead.
+        // Session-level guard (§3/§6): items should arrive playable (URI in
+        // localConfiguration). Anything unresolved is resolved HERE by
+        // identity — never passed through blind — with requested-vs-resolved
+        // recorded so the pair can never go ambiguous again.
         override fun onAddMediaItems(
             session: MediaSession,
             controller: MediaSession.ControllerInfo,
             mediaItems: List<MediaItem>,
         ): ListenableFuture<List<MediaItem>> {
-            mediaItems.forEach {
-                if (it.localConfiguration == null) {
-                    PlaybackConnection.reportError("Unplayable item received (no audio source)")
+            val out = mediaItems.map { item ->
+                val playable = item.localConfiguration?.uri
+                if (playable != null) {
+                    item // already resolved: canonical passthrough
+                } else {
+                    val resolved = resolveIdentityToUri(item.mediaId) {
+                        Uri.fromFile(toneFile(applicationContext))
+                    }
+                    if (resolved != null) {
+                        PlaybackConnection.recordTransition(
+                            "RESOLVE requested=${item.mediaId} resolved=$resolved",
+                        )
+                        item.buildUpon().setUri(resolved).build()
+                    } else {
+                        PlaybackConnection.reportError(
+                            "Unplayable item received (${item.mediaId})",
+                        )
+                        item
+                    }
                 }
             }
-            return Futures.immediateFuture(mediaItems)
+            return Futures.immediateFuture(out)
         }
     }
 
@@ -229,6 +282,9 @@ class PlaybackService : MediaSessionService() {
     }
 
     companion object {
+        /** Diagnostic-only direct-play action (no controller involved). */
+        const val ACTION_DIAG_PLAY = "com.veeshays.pulse.action.DIAG_PLAY"
+
         /** Build a one-off status notification (e.g. error hint). Session owns the media one. */
         fun hintNotification(ctx: Context, text: String): android.app.Notification {
             val mgr = ctx.getSystemService(NotificationManager::class.java)

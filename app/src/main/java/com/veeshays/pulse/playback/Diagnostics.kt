@@ -84,6 +84,7 @@ fun DiagnosticsCard(ps: PlayerUiState) {
             Text("Playback diagnostics", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(4.dp))
             DiagRow("Engine", if (c == null) "not connected" else "connected")
+            DiagRow("Controller", c?.hashCode()?.toString() ?: "null")
             DiagRow("Player", "$stateName · playWhenReady=${c?.playWhenReady ?: "-"}")
             DiagRow(
                 "Queue",
@@ -92,6 +93,11 @@ fun DiagnosticsCard(ps: PlayerUiState) {
             DiagRow(
                 "Current",
                 ps.mediaId?.substringAfterLast('/')?.take(48) ?: "none",
+            )
+            DiagRow(
+                "Playable URI",
+                ps.controller?.currentMediaItem?.localConfiguration?.uri?.toString()?.take(80)
+                    ?: "NONE — resolution broken",
             )
             DiagRow(
                 "Position",
@@ -166,7 +172,7 @@ fun DiagnosticsCard(ps: PlayerUiState) {
                     runCatching {
                         val uri = Uri.fromFile(toneFile(ctx))
                         val item = MediaItem.Builder()
-                            .setMediaId("pupplay://probe-tone")
+                            .setMediaId(TONE_MEDIA_ID)
                             .setUri(uri)
                             .setMediaMetadata(
                                 MediaMetadata.Builder()
@@ -192,6 +198,19 @@ fun DiagnosticsCard(ps: PlayerUiState) {
                         PlaybackConnection.reportError("Test tone failed")
                     }
                 }) { Text("Play test tone") }
+                // Isolation path (§2): same service/player, NO controller.
+                // Distinguishes engine failure from controller/session failure.
+                Button(onClick = {
+                    runCatching {
+                        ctx.startService(
+                            android.content.Intent(ctx, PlaybackService::class.java)
+                                .setAction(PlaybackService.ACTION_DIAG_PLAY),
+                        )
+                        toneState = "direct play sent to service — watch transitions"
+                    }.onFailure {
+                        toneState = "direct play failed: ${it.message}"
+                    }
+                }) { Text("Direct play") }
             }
             toneState?.let {
                 Spacer(Modifier.height(4.dp))

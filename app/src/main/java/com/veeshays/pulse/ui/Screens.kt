@@ -296,7 +296,19 @@ fun LibraryScreen(ps: PlayerUiState, onOpenSheet: (String) -> Unit) {
                 val all = res.audio.sortedByDescending { it.dateAdded }
                 val diff = diffLibrary(tracks, all)
                 tracks = all
-                if (wantNotice) fetchNotice = Brand.Copy.fetchResult(res.audio.size, res.video.size)
+                if (wantNotice) {
+                    // Full scan report: mapped / skipped-unreadable /
+                    // skipped-unsupported / truncated — never just a number.
+                    val parts = mutableListOf(
+                        Brand.Copy.fetchResult(res.audio.size, res.video.size),
+                    )
+                    if (res.skippedUnreadable > 0) parts += "${res.skippedUnreadable} unreadable"
+                    if (res.skippedUnsupported > 0) parts += "${res.skippedUnsupported} unsupported"
+                    if (res.truncated) parts += "truncated at ${MediaLibrary.MAX_ITEMS}"
+                    if (diff.added.isNotEmpty()) parts += "${diff.added.size} new"
+                    if (diff.removed.isNotEmpty()) parts += "${diff.removed.size} gone"
+                    fetchNotice = parts.joinToString(" · ")
+                }
                 // Prune vanished files from the persisted queue only. The
                 // live controller item is untouched: a scan never resets or
                 // duplicates playback or its notification.

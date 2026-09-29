@@ -33,6 +33,14 @@ Living list. Updated 2026-09-25. Device-verified items move out; new findings mo
   report instead of stalling in BUFFERING).
 - PupPlay is music-only: video tab/screen removed (4 sections:
   Player · Library · EQ · Settings); engine keeps video capability.
+- Runtime forensics (Sept 29): phone showed BUFFERING + empty transitions,
+  so every layer is now instance-tagged (service/player/session/controller
+  IDs, lifecycle create/destroy events, requested-vs-resolved URIs,
+  playWhenReady). Session resolves sourceless items by identity
+  (tone→file, content/file→itself, bare IDs/titles→reported, never guessed);
+  taps pre-verify readability via openFileDescriptor; tone plays from a cache
+  file (no custom scheme in the playback path). Direct-service diag play
+  isolates engine vs controller/session failures.
 
 ## Decisive on-device protocol (do this first on hardware)
 
