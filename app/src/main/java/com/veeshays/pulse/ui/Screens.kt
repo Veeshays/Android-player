@@ -15,7 +15,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -35,10 +35,10 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Fullscreen
-import androidx.compose.material.icons.filled.FullscreenExit
+
+
 import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PictureInPicture
+
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Button
@@ -69,20 +69,20 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
+
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
+
+
+
 import androidx.core.content.ContextCompat
 import androidx.media3.common.Player
 import androidx.media3.common.PlaybackParameters
-import androidx.media3.ui.PlayerView
+
 import com.veeshays.pulse.PulseApp
 import com.veeshays.pulse.library.MediaLibrary
 import com.veeshays.pulse.library.diffLibrary
@@ -241,7 +241,7 @@ private fun PlayerHero(ps: PlayerUiState) {
 // ---------------------------------------------------------------------------
 
 @Composable
-fun LibraryScreen(ps: PlayerUiState, onOpenSheet: (String) -> Unit, onOpenVideo: () -> Unit) {
+fun LibraryScreen(ps: PlayerUiState, onOpenSheet: (String) -> Unit) {
     val ctx = LocalContext.current
     val app = ctx.applicationContext as PulseApp
     val state by app.store.state.collectAsState()
@@ -290,9 +290,10 @@ fun LibraryScreen(ps: PlayerUiState, onOpenSheet: (String) -> Unit, onOpenVideo:
         val scanMode = if (wantNotice) MediaLibrary.ScanMode.FULL else MediaLibrary.ScanMode.STARTUP
         fetchProgress = 0
         try {
-            val res = library.scan(scanMode) { rows -> fetchProgress = rows }
+            // Music-only library: video volume skipped (engine keeps support).
+            val res = library.scan(scanMode, { rows -> fetchProgress = rows }, includeVideo = false)
             if (res != null) {
-                val all = (res.audio + res.video).sortedByDescending { it.dateAdded }
+                val all = res.audio.sortedByDescending { it.dateAdded }
                 val diff = diffLibrary(tracks, all)
                 tracks = all
                 if (wantNotice) fetchNotice = Brand.Copy.fetchResult(res.audio.size, res.video.size)
@@ -350,7 +351,7 @@ fun LibraryScreen(ps: PlayerUiState, onOpenSheet: (String) -> Unit, onOpenVideo:
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier.horizontalScroll(rememberScrollState()),
         ) {
-            listOf("Songs", "Artists", "Albums", "Videos", "Recent", "Favorites").forEach { m ->
+            listOf("Songs", "Artists", "Albums", "Recent", "Favorites").forEach { m ->
                 FilterChip(selected = mode == m, onClick = { mode = m; limit = 100 }, label = { Text(m) })
             }
         }
@@ -403,10 +404,25 @@ fun LibraryScreen(ps: PlayerUiState, onOpenSheet: (String) -> Unit, onOpenVideo:
         // Queue-follows-view: the tapped list becomes the player playlist
         // (with resume points); the snapshot persists for cold start.
         fun playTracks(list: List<Track>, start: Track) {
-            val items = buildMediaItems(list, state.positions) { t ->
-                library.artworkUri(t.key, t.isVideo)
-            }
-            ps.controller?.let { c ->
+            scope.launch {
+                // Documented MediaStore access model: prove the content URI
+                // opens BEFORE it reaches Media3, so an unreadable file
+                // reports explicitly instead of stalling in BUFFERING.
+                val readable = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    runCatching {
+                        ctx.contentResolver.openAssetFileDescriptor(
+                            android.net.Uri.parse(start.key), "r",
+                        )?.close()
+                    }.isSuccess
+                }
+                if (!readable) {
+                    PlaybackConnection.reportError("File unreadable — it may have been deleted")
+                    return@launch
+                }
+                val items = buildMediaItems(list, state.positions) { t ->
+                    library.artworkUri(t.key, t.isVideo)
+                }
+                ps.controller?.let { c ->
                 runCatching {
                     c.setMediaItems(items, startIndexOf(list, start.key), TIME_UNSET)
                     c.prepare()
@@ -422,15 +438,15 @@ fun LibraryScreen(ps: PlayerUiState, onOpenSheet: (String) -> Unit, onOpenVideo:
                         PlaybackConnection.reportError("Playback didn't start — check the file format")
                     }
                 }
-            } ?: run {
+                } ?: run {
                 // Never fail silently: (re)start the engine and say so.
                 PlaybackConnection.connect(ctx)
                 PlaybackConnection.reportError("Starting playback engine — tap once more")
-            }
-            app.store.update { s ->
+                }
+                app.store.update { s ->
                 s.copy(queue = s.queue.copy(keys = list.map { x -> x.key }, index = list.indexOf(start)))
+                }
             }
-            if (start.isVideo) onOpenVideo()
         }
 
         val searched = remember(tracks, query) {
@@ -441,7 +457,6 @@ fun LibraryScreen(ps: PlayerUiState, onOpenSheet: (String) -> Unit, onOpenVideo:
         }
         val scoped = remember(searched, mode, favs, history) {
             when (mode) {
-                "Videos" -> searched.filter { it.isVideo }
                 "Favorites" -> searched.filter { it.key in favs }
                 "Recent" -> history.asReversed().mapNotNull { k -> searched.find { it.key == k } }.distinct()
                 else -> searched
@@ -466,7 +481,7 @@ fun LibraryScreen(ps: PlayerUiState, onOpenSheet: (String) -> Unit, onOpenVideo:
             }
         }
         val flatCount = groups?.sumOf { it.second.size } ?: ordered.size
-        val unit = if (mode == "Videos") "videos" else "tracks"
+        val unit = "tracks"
         // Desktop hierarchy nod: letterspaced small-caps count line.
         Text(
             "$flatCount $unit".uppercase(),
@@ -501,7 +516,6 @@ fun LibraryScreen(ps: PlayerUiState, onOpenSheet: (String) -> Unit, onOpenVideo:
                             query.isNotBlank() -> "No matches for “$query”"
                             mode == "Favorites" -> "No favorites yet — tap ♡ on anything"
                             mode == "Recent" -> "Nothing played yet"
-                            mode == "Videos" -> "No videos found"
                             else -> "Nothing here yet"
                         },
                         style = MaterialTheme.typography.titleMedium,
@@ -559,162 +573,6 @@ fun LibraryScreen(ps: PlayerUiState, onOpenSheet: (String) -> Unit, onOpenVideo:
     }
 }
 
-// ---------------------------------------------------------------------------
-// VIDEO — portrait/landscape/fullscreen/immersive, aspect preserved, seek,
-// speed, subtitles cue overlay, resume. Fullscreen consumes Back first (§14).
-// ---------------------------------------------------------------------------
-
-@Composable
-fun VideoScreen(ps: PlayerUiState) {
-    var fullscreen by remember { mutableStateOf(false) }
-    BackHandler(enabled = fullscreen) { fullscreen = false } // exit fullscreen first
-    var speed by remember { mutableStateOf(1f) }
-
-    // One shared ExoPlayer (service) renders into exactly one attached
-    // PlayerView at a time: inline stage, or the fullscreen dialog.
-    // (resizeMode defaults to FIT — aspect preserved, never stretched.)
-    @Composable
-    fun stage(modifier: Modifier, tag: String) {
-        AndroidView(
-            factory = { ctx ->
-                PlayerView(ctx).apply {
-                    useController = false // PupPlay renders its own fixed chrome
-                }
-            },
-            update = { v ->
-                v.player = when {
-                    tag == "full" && fullscreen -> ps.controller
-                    tag == "inline" && !fullscreen -> ps.controller
-                    else -> null
-                }
-            },
-            onRelease = { it.player = null },
-            modifier = modifier.semantics {
-                contentDescription = if (fullscreen) "Video fullscreen" else "Video stage"
-            },
-        )
-    }
-
-    if (fullscreen) {
-        // Immersive dialog: edge-to-edge surface + compact chrome.
-        Dialog(
-            onDismissRequest = { fullscreen = false },
-            properties = DialogProperties(
-                dismissOnBackPress = false, // BackHandler above owns Back
-                dismissOnClickOutside = false,
-                usePlatformDefaultWidth = false,
-                decorFitsSystemWindows = false,
-            ),
-        ) {
-            BackHandler(enabled = true) { fullscreen = false }
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .background(MaterialTheme.colorScheme.scrim),
-            ) {
-                stage(Modifier.fillMaxSize(), "full")
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .align(Alignment.BottomCenter)
-                        .background(
-                            Brush.verticalGradient(
-                                0f to Color.Transparent,
-                                1f to MaterialTheme.colorScheme.scrim.copy(alpha = 0.85f),
-                            ),
-                        )
-                        .padding(8.dp),
-                    horizontalArrangement = Arrangement.SpaceEvenly,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    IconButton(
-                        onClick = {
-                            val c = ps.controller ?: return@IconButton
-                            if (c.isPlaying) c.pause() else c.play()
-                        },
-                        modifier = Modifier.size(48.dp).semantics {
-                            contentDescription = if (ps.playing) "Pause" else "Play"
-                        },
-                    ) {
-                        Icon(
-                            if (ps.playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                            null, tint = Color.White, modifier = Modifier.size(32.dp),
-                        )
-                    }
-                    IconButton(
-                        onClick = { fullscreen = false },
-                        modifier = Modifier.size(48.dp).semantics { contentDescription = "Exit fullscreen" },
-                    ) { Icon(Icons.Filled.FullscreenExit, null, tint = Color.White) }
-                }
-            }
-        }
-    }
-
-    Column(Modifier.fillMaxSize()) {
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(240.dp)
-                .background(MaterialTheme.colorScheme.scrim)
-                .clickable { fullscreen = true }
-                .semantics { contentDescription = "Enter fullscreen" },
-            contentAlignment = Alignment.Center,
-        ) {
-            stage(Modifier.fillMaxSize(), "inline")
-            if (ps.mediaId == null) {
-                Text(
-                    "${Brand.Labels.VIDEO} — pick a video from Library",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-        SeekRow(
-            positionMs = ps.positionMs,
-            durationMs = ps.durationMs.coerceAtLeast(1L),
-            onSeek = { ps.controller?.seekTo(it) },
-        )
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-                TextButton(onClick = {
-                    speed = when (speed) { 1f -> 1.5f; 1.5f -> 2f; 2f -> 0.5f; else -> 1f }
-                    ps.controller?.setPlaybackParameters(PlaybackParameters(speed))
-                }) {
-                Text("${speed}×", modifier = Modifier.semantics { contentDescription = "Playback speed $speed" })
-            }
-            IconButton(onClick = {}, modifier = Modifier.size(48.dp).semantics { contentDescription = "Picture in picture" }) {
-                Icon(Icons.Filled.PictureInPicture, null)
-            }
-            IconButton(onClick = { fullscreen = true }, modifier = Modifier.size(48.dp).semantics { contentDescription = "Fullscreen" }) {
-                Icon(Icons.Filled.Fullscreen, null)
-            }
-        }
-        TransportRow(
-            playing = ps.playing,
-            shuffle = ps.shuffle,
-            repeat = ps.repeat,
-            onPlayPause = {
-                val c = ps.controller ?: return@TransportRow
-                if (c.isPlaying) c.pause() else c.play()
-            },
-            onNext = { ps.controller?.seekToNextMediaItem() },
-            onPrev = { ps.controller?.seekToPreviousMediaItem() },
-            onShuffle = { ps.controller?.let { c -> c.shuffleModeEnabled = !c.shuffleModeEnabled } },
-            onRepeat = {
-                ps.controller?.let { c ->
-                    c.repeatMode = when (c.repeatMode) {
-                        Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
-                        Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
-                        else -> Player.REPEAT_MODE_OFF
-                    }
-                }
-            },
-            compact = true,
-        )
-    }
-}
 
 // ---------------------------------------------------------------------------
 // LYRICS — dedicated sheet (LRCLIB lookup + local cache). Loading never

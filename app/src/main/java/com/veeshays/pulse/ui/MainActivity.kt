@@ -13,7 +13,6 @@ import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -95,7 +94,7 @@ class MainActivity : ComponentActivity() {
 }
 
 private enum class Dest(val label: String) {
-    Player(Brand.Labels.MUSIC), Library("Library"), Video(Brand.Labels.VIDEO), Eq("EQ"), Settings("Settings"),
+    Player(Brand.Labels.MUSIC), Library("Library"), Eq("EQ"), Settings("Settings"),
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -116,10 +115,6 @@ private fun PulseScaffold(startScreen: String?) {
     fun goPlayer() {
         dest = Dest.Player
         MainActivity.currentScreen = Dest.Player.name
-    }
-    fun goVideo() {
-        dest = Dest.Video
-        MainActivity.currentScreen = Dest.Video.name
     }
 
     // Back handling is owned by each screen via BackHandler (fullscreen → sheet
@@ -145,7 +140,6 @@ private fun PulseScaffold(startScreen: String?) {
                         when (dest) {
                             Dest.Player -> Brand.Labels.MUSIC
                             Dest.Library -> "Library"
-                            Dest.Video -> Brand.Labels.VIDEO
                             Dest.Eq -> "EQ"
                             Dest.Settings -> "Settings"
                         },
@@ -162,7 +156,6 @@ private fun PulseScaffold(startScreen: String?) {
                     listOf(
                         Dest.Player to Icons.Filled.PlayCircle,
                         Dest.Library to Icons.Filled.LibraryMusic,
-                        Dest.Video to Icons.Filled.Subtitles,
                         Dest.Eq to Icons.Filled.Tune,
                         Dest.Settings to Icons.Filled.Settings,
                     ).forEach { (d, icon) ->
@@ -197,8 +190,7 @@ private fun PulseScaffold(startScreen: String?) {
                     onOpenQueue = { queueOpen = true },
                     onOpenSheet = { sheet = it },
                 )
-                Dest.Library -> LibraryScreen(ps = ps, onOpenSheet = { sheet = it }, onOpenVideo = ::goVideo)
-                Dest.Video -> VideoScreen(ps = ps)
+                Dest.Library -> LibraryScreen(ps = ps, onOpenSheet = { sheet = it })
                 Dest.Eq -> EqScreen()
                 Dest.Settings -> SettingsScreen(ps = ps)
             }

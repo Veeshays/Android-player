@@ -70,6 +70,7 @@ class MediaLibrary(context: Context) {
     suspend fun scan(
         mode: ScanMode = ScanMode.FULL,
         onProgress: (rowsSeen: Int) -> Unit = {},
+        includeVideo: Boolean = true,
     ): ScanResult? {
         if (!guard.tryAcquire()) return null
         try {
@@ -77,7 +78,11 @@ class MediaLibrary(context: Context) {
                 val report: (Int) -> Unit =
                     if (mode == ScanMode.FULL) onProgress else { _ -> }
                 val audio = queryVolume(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, false, report)
-                val video = queryVolume(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, true, report)
+                val video = if (includeVideo) {
+                    queryVolume(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, true, report)
+                } else {
+                    Collection(emptyList(), 0, 0, false)
+                }
                 ScanResult(
                     audio = audio.tracks,
                     video = video.tracks,

@@ -2,7 +2,7 @@
 
 Living list. Updated 2026-09-25. Device-verified items move out; new findings move in.
 
-## Engine verdict (proven on JVM via Robolectric, PlaybackEngineTest 5/5)
+## Engine verdict (proven on JVM via Robolectric, PlaybackEngineTest 6/6)
 
 - `PlaybackService` lifecycle runs: session + ExoPlayer constructed, session
   wraps the SAME player instance the UI would drive.
@@ -26,6 +26,13 @@ Living list. Updated 2026-09-25. Device-verified items move out; new findings mo
   blank metadata). Fixed: both now show honest empty/unknown states, and a
   duplicate hero artwork layer was removed.
 - Numerically-named files ("8890.mp3") keep filename identity consistently.
+- Playback stack pinned to the canonical model: explicit
+  DefaultMediaSourceFactory (progressive fallback), session-level
+  onAddMediaItems guard rejecting sourceless items loudly, and an
+  openFileDescriptor readability pre-check on every tap (unreadable files
+  report instead of stalling in BUFFERING).
+- PupPlay is music-only: video tab/screen removed (4 sections:
+  Player · Library · EQ · Settings); engine keeps video capability.
 
 ## Decisive on-device protocol (do this first on hardware)
 

@@ -20,8 +20,11 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import com.google.common.util.concurrent.Futures
+import com.google.common.util.concurrent.ListenableFuture
 import com.veeshays.pulse.core.classify
 import com.veeshays.pulse.core.message
 import com.veeshays.pulse.store.PulseStore
@@ -70,11 +73,17 @@ class PlaybackService : MediaSessionService() {
             .setUsage(C.USAGE_MEDIA)
             .build()
 
+        // Canonical local-media stack, stated explicitly: ContentResolver-backed
+        // data source (content://, file://, resource) → progressive source
+        // fallback with extractors for ordinary local files. This is also the
+        // default, but pinning it documents the supported model.
+        val dataSource = DefaultDataSource.Factory(this)
         player = ExoPlayer.Builder(this)
             .setAudioAttributes(audioAttrs, /* handleFocus = */ true)
             .setHandleAudioBecomingNoisy(true) // headset/BT disconnect → pause
             .setSeekBackIncrementMs(5_000) // PC ←/→ ∓5s parity
             .setSeekForwardIncrementMs(5_000)
+            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSource))
             .build().also { exo ->
                 exo.addListener(serviceListener)
                 exo.setForegroundMode(false)
@@ -187,6 +196,22 @@ class PlaybackService : MediaSessionService() {
             controller: MediaSession.ControllerInfo,
             playerCommand: Int,
         ): Int = playerCommand
+
+        // Session-level guard for §6: items must arrive playable (URI in
+        // localConfiguration). A metadata-only item can never reach the
+        // player silently — it is announced instead.
+        override fun onAddMediaItems(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            mediaItems: List<MediaItem>,
+        ): ListenableFuture<List<MediaItem>> {
+            mediaItems.forEach {
+                if (it.localConfiguration == null) {
+                    PlaybackConnection.reportError("Unplayable item received (no audio source)")
+                }
+            }
+            return Futures.immediateFuture(mediaItems)
+        }
     }
 
     private fun ensureChannel() {
