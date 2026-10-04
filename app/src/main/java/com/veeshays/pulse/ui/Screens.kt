@@ -297,16 +297,18 @@ fun LibraryScreen(ps: PlayerUiState, onOpenSheet: (String) -> Unit) {
                 val diff = diffLibrary(tracks, all)
                 tracks = all
                 if (wantNotice) {
-                    // Full scan report: mapped / skipped-unreadable /
-                    // skipped-unsupported / truncated — never just a number.
+                    // Full scan report: rows seen → mapped / skipped-unreadable /
+                    // skipped-unsupported / truncated / added / removed / visible.
                     val parts = mutableListOf(
                         Brand.Copy.fetchResult(res.audio.size, res.video.size),
                     )
+                    parts += "${res.rowsSeen} rows"
                     if (res.skippedUnreadable > 0) parts += "${res.skippedUnreadable} unreadable"
                     if (res.skippedUnsupported > 0) parts += "${res.skippedUnsupported} unsupported"
                     if (res.truncated) parts += "truncated at ${MediaLibrary.MAX_ITEMS}"
                     if (diff.added.isNotEmpty()) parts += "${diff.added.size} new"
                     if (diff.removed.isNotEmpty()) parts += "${diff.removed.size} gone"
+                    parts += "${all.size} visible"
                     fetchNotice = parts.joinToString(" · ")
                 }
                 // Prune vanished files from the persisted queue only. The

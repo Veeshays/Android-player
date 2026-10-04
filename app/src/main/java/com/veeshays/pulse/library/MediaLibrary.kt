@@ -54,9 +54,10 @@ class MediaLibrary(context: Context) {
         val skippedUnsupported: Int,
         val skippedUnreadable: Int,
         val truncated: Boolean,
+        val rowsSeen: Int, // raw cursor rows iterated (both volumes)
     ) {
         companion object {
-            val EMPTY = ScanResult(emptyList(), emptyList(), 0, 0, false)
+            val EMPTY = ScanResult(emptyList(), emptyList(), 0, 0, false, 0)
         }
     }
 
@@ -81,7 +82,7 @@ class MediaLibrary(context: Context) {
                 val video = if (includeVideo) {
                     queryVolume(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, true, report)
                 } else {
-                    Collection(emptyList(), 0, 0, false)
+                    Collection(emptyList(), 0, 0, false, 0)
                 }
                 ScanResult(
                     audio = audio.tracks,
@@ -89,6 +90,7 @@ class MediaLibrary(context: Context) {
                     skippedUnsupported = audio.skipped + video.skipped,
                     skippedUnreadable = audio.unreadable + video.unreadable,
                     truncated = audio.truncated || video.truncated,
+                    rowsSeen = audio.rows + video.rows,
                 )
             }
         } finally {
@@ -101,6 +103,7 @@ class MediaLibrary(context: Context) {
         val skipped: Int,
         val unreadable: Int,
         val truncated: Boolean,
+        val rows: Int,
     )
 
     private suspend fun queryVolume(
@@ -118,7 +121,7 @@ class MediaLibrary(context: Context) {
             MediaStore.MediaColumns.SIZE,
             MediaStore.MediaColumns.DATE_ADDED,
         )
-        var result = Collection(emptyList(), 0, 0, false)
+        var result = Collection(emptyList(), 0, 0, false, 0)
         runCatching {
             appContext.contentResolver.query(
                 uri, proj,
@@ -170,7 +173,7 @@ class MediaLibrary(context: Context) {
                 break
             }
         }
-        return Collection(seen.values.toList(), skipped, unreadable, truncated)
+        return Collection(seen.values.toList(), skipped, unreadable, truncated, rows)
     }
 
     private data class ColumnIdx(

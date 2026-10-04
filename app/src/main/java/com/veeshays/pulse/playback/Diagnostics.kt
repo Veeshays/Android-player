@@ -147,8 +147,11 @@ fun DiagnosticsCard(ps: PlayerUiState) {
                 }) { Text(if (copied) "Copied" else "Copy report") }
             }
             if (probing) {
-                LaunchedEffect(ps.mediaId) {
-                    probe = probeCurrent(ctx, ps.mediaId)
+                // Probe the PLAYABLE uri (controller item), never the mediaId
+                // label — parsing a label as a URI always lies FileNotFound.
+                val playable = ps.controller?.currentMediaItem?.localConfiguration?.uri?.toString()
+                LaunchedEffect(ps.mediaId, probing) {
+                    probe = probeCurrent(ctx, playable)
                     probing = false
                 }
                 if (probe == null) {
@@ -156,10 +159,12 @@ fun DiagnosticsCard(ps: PlayerUiState) {
                     CircularProgressIndicator()
                 }
             }
-            // Self-test: known-good bundled WAV (copied once to a plain file)
-            // through the SAME controller → service → ExoPlayer path as
-            // library taps. Tone audible ⇒ engine OK and MediaStore URIs are
-            // suspect; tone silent ⇒ engine broken.
+            // Self-test: bundled WAV addressed DIRECTLY by its immutable
+            // android.resource URI through the SAME controller → service →
+            // ExoPlayer path as library taps. Existence is verified up front,
+            // so a missing resource reports instead of stalling. Tone audible
+            // ⇒ engine OK and MediaStore URIs are suspect; tone silent ⇒
+            // engine/focus/output problem below the URI layer.
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = {
@@ -170,7 +175,15 @@ fun DiagnosticsCard(ps: PlayerUiState) {
                         return@Button
                     }
                     runCatching {
-                        val uri = Uri.fromFile(toneFile(ctx))
+                        val resId = ctx.resources.getIdentifier(
+                            "probe_tone", "raw", ctx.packageName,
+                        )
+                        if (resId == 0) {
+                            toneState = "tone missing from this install — reinstall the APK"
+                            PlaybackConnection.reportError("Tone fixture missing (stale install?)")
+                            return@Button
+                        }
+                        val uri = Uri.parse(toneResourceUri(ctx.packageName))
                         val item = MediaItem.Builder()
                             .setMediaId(TONE_MEDIA_ID)
                             .setUri(uri)
@@ -233,12 +246,12 @@ private fun DiagRow(label: String, value: String) {
     }
 }
 
-/** Reads the current URI through the ContentResolver exactly as playback would. */
-private suspend fun probeCurrent(ctx: Context, mediaId: String?): String =
+/** Probe a PLAYABLE uri string (never a mediaId label) through the resolver. */
+private suspend fun probeCurrent(ctx: Context, playableUri: String?): String =
     withContext(Dispatchers.IO) {
-        if (mediaId == null) return@withContext "nothing loaded"
+        if (playableUri.isNullOrBlank()) return@withContext "no playable URI"
         try {
-            val uri = Uri.parse(mediaId)
+            val uri = Uri.parse(playableUri)
             val type = ctx.contentResolver.getType(uri) ?: "unknown type"
             ctx.contentResolver.openInputStream(uri)?.use { it.read() }
                 ?: return@withContext "UNREADABLE ($type) — file may be gone"
@@ -247,21 +260,3 @@ private suspend fun probeCurrent(ctx: Context, mediaId: String?): String =
             "UNREADABLE (${e.javaClass.simpleName}) — file may be gone"
         }
     }
-
-/**
- * Self-test tone as a bulletproof file:// URI: the bundled WAV is copied once
- * into cache (never user media, 441KB, deleted with app data). FileDataSource
- * is the simplest possible DataSource — no resource-table or provider layers
- * between the test and the player.
- */
-fun toneFile(context: Context): java.io.File {
-    val out = java.io.File(context.cacheDir, "probe_tone.wav")
-    if (!out.exists() || out.length() == 0L) {
-        context.resources.openRawResource(
-            context.resources.getIdentifier("probe_tone", "raw", context.packageName),
-        ).use { src ->
-            out.outputStream().use { dst -> src.copyTo(dst) }
-        }
-    }
-    return out
-}

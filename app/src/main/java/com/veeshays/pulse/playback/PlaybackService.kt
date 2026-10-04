@@ -118,7 +118,7 @@ class PlaybackService : MediaSessionService() {
     }
 
     /**
-     * Diagnostic isolation path (§2): play the file tone DIRECTLY on this
+     * Diagnostic isolation path: play the bundled tone DIRECTLY on this
      * service's ExoPlayer with no MediaController involved. Started via
      * startService with ACTION_DIAG_PLAY; uses the same instance the session
      * wraps (never a parallel player). Temporary diagnostic, not architecture.
@@ -130,7 +130,12 @@ class PlaybackService : MediaSessionService() {
                 PlaybackConnection.reportError("diag play: player gone (service dying?)")
             } else {
                 runCatching {
-                    val uri = Uri.fromFile(toneFile(applicationContext))
+                    val pkg = applicationContext.packageName
+                    val id = applicationContext.resources.getIdentifier(
+                        "probe_tone", "raw", pkg,
+                    )
+                    if (id == 0) error("tone missing from this install")
+                    val uri = Uri.parse(toneResourceUri(pkg))
                     p.setMediaItem(MediaItem.fromUri(uri))
                     p.prepare()
                     p.play()
@@ -248,7 +253,12 @@ class PlaybackService : MediaSessionService() {
                     item // already resolved: canonical passthrough
                 } else {
                     val resolved = resolveIdentityToUri(item.mediaId) {
-                        Uri.fromFile(toneFile(applicationContext))
+                        val pkg = applicationContext.packageName
+                        val id = applicationContext.resources.getIdentifier(
+                            "probe_tone", "raw", pkg,
+                        )
+                        if (id == 0) null
+                        else Uri.parse(toneResourceUri(pkg))
                     }
                     if (resolved != null) {
                         PlaybackConnection.recordTransition(

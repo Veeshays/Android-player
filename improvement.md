@@ -41,6 +41,12 @@ Living list. Updated 2026-09-25. Device-verified items move out; new findings mo
   taps pre-verify readability via openFileDescriptor; tone plays from a cache
   file (no custom scheme in the playback path). Direct-service diag play
   isolates engine vs controller/session failures.
+- Tone post-mortem (Oct 4): the cache-file tone could go stale between copy
+  and play, and the probe parsed the mediaId LABEL as a URI (guaranteed
+  FileNotFound). Tone now uses the immutable android.resource URI directly
+  (existence verified up front); probes always target the playable URI, never
+  the label. Fetch notices carry full scan reports (rows/mapped/skipped/
+  truncated/added/removed/visible).
 
 ## Decisive on-device protocol (do this first on hardware)
 

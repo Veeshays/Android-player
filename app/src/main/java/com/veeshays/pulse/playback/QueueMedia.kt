@@ -77,6 +77,10 @@ val TIME_UNSET: Long = C.TIME_UNSET
 /** Stable identity of the bundled self-test tone (a LABEL, never a source). */
 const val TONE_MEDIA_ID = "pupplay://probe-tone"
 
+/** Package-scoped android.resource URI for the bundled tone (immutable install asset). */
+fun toneResourceUri(packageName: String): String =
+    "android.resource://$packageName/raw/probe_tone"
+
 /**
  * Session resolution contract (§3): given a requested media identity, decide
  * the playable URI. Rules, in order:
@@ -87,9 +91,10 @@ const val TONE_MEDIA_ID = "pupplay://probe-tone"
  *    must be reported, never guessed.
  * Pure + unit-tested.
  */
-fun resolveIdentityToUri(mediaId: String, toneFileUri: () -> Uri?): Uri? = when {
-    mediaId == TONE_MEDIA_ID -> runCatching { toneFileUri() }.getOrNull()
+fun resolveIdentityToUri(mediaId: String, toneUri: () -> Uri?): Uri? = when {
+    mediaId == TONE_MEDIA_ID -> runCatching { toneUri() }.getOrNull()
     mediaId.startsWith("content://") -> runCatching { Uri.parse(mediaId) }.getOrNull()
     mediaId.startsWith("file://") -> runCatching { Uri.parse(mediaId) }.getOrNull()
+    mediaId.startsWith("android.resource://") -> runCatching { Uri.parse(mediaId) }.getOrNull()
     else -> null
 }
