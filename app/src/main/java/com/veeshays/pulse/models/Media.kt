@@ -22,6 +22,8 @@ data class Track(
     val sizeBytes: Long = 0L,
     val dateAdded: Long = 0L,
     val isVideo: Boolean = false,
+    /** MediaStore audio album id (-1 when unknown); artwork is keyed off this, never the track id. */
+    val albumId: Long = -1L,
 )
 
 @Serializable

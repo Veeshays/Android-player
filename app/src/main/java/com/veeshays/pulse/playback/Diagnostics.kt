@@ -29,13 +29,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.media3.common.C
-import androidx.media3.common.MediaItem
-import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import com.veeshays.pulse.ui.PlayerUiState
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -159,71 +155,24 @@ fun DiagnosticsCard(ps: PlayerUiState) {
                     CircularProgressIndicator()
                 }
             }
-            // Self-test: bundled WAV addressed DIRECTLY by its immutable
-            // android.resource URI through the SAME controller → service →
-            // ExoPlayer path as library taps. Existence is verified up front,
-            // so a missing resource reports instead of stalling. Tone audible
-            // ⇒ engine OK and MediaStore URIs are suspect; tone silent ⇒
-            // engine/focus/output problem below the URI layer.
+            // Self-test tone: INDEPENDENT of ExoPlayer (AudioTrack sine via
+            // TonePlayer). Proves the device output path only; it can neither
+            // pass nor fail library playback, and library playback never
+            // depends on it. Verified separately, ears-on.
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = {
-                    val ctl = ps.controller
-                    if (ctl == null) {
-                        toneState = "engine not connected — tap Fetch/Library first"
-                        PlaybackConnection.reportError("Test tone needs the playback engine")
-                        return@Button
-                    }
-                    runCatching {
-                        val resId = ctx.resources.getIdentifier(
-                            "probe_tone", "raw", ctx.packageName,
-                        )
-                        if (resId == 0) {
-                            toneState = "tone missing from this install — reinstall the APK"
-                            PlaybackConnection.reportError("Tone fixture missing (stale install?)")
-                            return@Button
+                    toneState = "playing tone…"
+                    scope.launch {
+                        val am = ctx.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+                        val out = am?.let { TonePlayer.outputLine(it) } ?: "volume unknown"
+                        val res = TonePlayer.play()
+                        toneState = "$res · $out"
+                        if (res.startsWith("tone failed")) {
+                            PlaybackConnection.reportError("Self-test tone failed: $res")
                         }
-                        val uri = Uri.parse(toneResourceUri(ctx.packageName))
-                        val item = MediaItem.Builder()
-                            .setMediaId(TONE_MEDIA_ID)
-                            .setUri(uri)
-                            .setMediaMetadata(
-                                MediaMetadata.Builder()
-                                    .setTitle("Probe tone 440Hz")
-                                    .setArtist("PupPlay self-test")
-                                    .build(),
-                            )
-                            .build()
-                        ctl.setMediaItems(listOf(item), 0, C.TIME_UNSET)
-                        ctl.prepare()
-                        ctl.play()
-                        toneState = "tone sent — listening…"
-                        scope.launch {
-                            delay(3000)
-                            toneState = if (ctl.isPlaying) {
-                                "TONE PLAYING (pos ${ctl.currentPosition}ms) — engine OK, suspect media URIs"
-                            } else {
-                                "tone NOT playing (state=${ctl.playbackState}) — engine problem"
-                            }
-                        }
-                    }.onFailure {
-                        toneState = "tone failed: ${it.message}"
-                        PlaybackConnection.reportError("Test tone failed")
                     }
                 }) { Text("Play test tone") }
-                // Isolation path (§2): same service/player, NO controller.
-                // Distinguishes engine failure from controller/session failure.
-                Button(onClick = {
-                    runCatching {
-                        ctx.startService(
-                            android.content.Intent(ctx, PlaybackService::class.java)
-                                .setAction(PlaybackService.ACTION_DIAG_PLAY),
-                        )
-                        toneState = "direct play sent to service — watch transitions"
-                    }.onFailure {
-                        toneState = "direct play failed: ${it.message}"
-                    }
-                }) { Text("Direct play") }
             }
             toneState?.let {
                 Spacer(Modifier.height(4.dp))
@@ -249,14 +198,14 @@ private fun DiagRow(label: String, value: String) {
 /** Probe a PLAYABLE uri string (never a mediaId label) through the resolver. */
 private suspend fun probeCurrent(ctx: Context, playableUri: String?): String =
     withContext(Dispatchers.IO) {
-        if (playableUri.isNullOrBlank()) return@withContext "no playable URI"
+        if (playableUri.isNullOrBlank()) return@withContext "no playable URI (mediaId=${playableUri})"
         try {
             val uri = Uri.parse(playableUri)
             val type = ctx.contentResolver.getType(uri) ?: "unknown type"
             ctx.contentResolver.openInputStream(uri)?.use { it.read() }
-                ?: return@withContext "UNREADABLE ($type) — file may be gone"
-            "readable ($type)"
+                ?: return@withContext "UNREADABLE uri=$playableUri type=$type — file may be gone"
+            "readable uri=$playableUri type=$type"
         } catch (e: Exception) {
-            "UNREADABLE (${e.javaClass.simpleName}) — file may be gone"
+            "UNREADABLE uri=$playableUri (${e.javaClass.simpleName}: ${e.message}) — file may be gone"
         }
     }

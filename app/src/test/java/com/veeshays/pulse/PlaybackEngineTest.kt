@@ -83,10 +83,11 @@ class PlaybackEngineTest {
         assertEquals(Player.STATE_IDLE, p.playbackState)
     }
 
-    @Test fun toneGoesThroughPlainFileUri() {
-        // The diagnostics tone must use a FileDataSource-readable file:// URI:
-        // custom schemes (e.g. pupplay://) have no DataSource and stall in
-        // BUFFERING. Only the stable mediaId may carry the pupplay:// label.
+    @Test fun fileUriWithOpaqueLabel_reachesReady() {
+        // Engine proof WITHOUT any probe-tone dependency: the mediaId is an
+        // opaque identity label, the playable URI is a real file. Custom
+        // schemes (e.g. pupplay://) have no DataSource and stall in
+        // BUFFERING, so they must never appear in the playback path.
         val file = File(app.cacheDir, "probe_tone.wav")
         file.writeBytes(javaClass.classLoader!!.getResource("probe_tone.wav")!!.readBytes())
         val uri = Uri.fromFile(file)
@@ -96,11 +97,11 @@ class PlaybackEngineTest {
         p.addListener(probe)
         try {
             val item = MediaItem.Builder()
-                .setMediaId("pupplay://probe-tone")
+                .setMediaId("test:local-file")
                 .setUri(uri)
                 .build()
             // Identity label survives; playable URI is the file.
-            assertEquals("pupplay://probe-tone", item.mediaId)
+            assertEquals("test:local-file", item.mediaId)
             assertEquals(uri, item.localConfiguration!!.uri)
             p.setMediaItem(item)
             p.prepare()

@@ -111,7 +111,7 @@ class MediaLibrary(context: Context) {
         isVideo: Boolean,
         onProgress: (Int) -> Unit,
     ): Collection {
-        val proj = arrayOf(
+        val base = arrayOf(
             MediaStore.MediaColumns._ID,
             MediaStore.MediaColumns.DISPLAY_NAME,
             MediaStore.MediaColumns.TITLE,
@@ -121,6 +121,9 @@ class MediaLibrary(context: Context) {
             MediaStore.MediaColumns.SIZE,
             MediaStore.MediaColumns.DATE_ADDED,
         )
+        // ALBUM_ID exists on the audio volume only; the video volume must
+        // not request it (unknown-column queries fail on some devices).
+        val proj = if (isVideo) base else base + MediaStore.Audio.Media.ALBUM_ID
         var result = Collection(emptyList(), 0, 0, false, 0)
         runCatching {
             appContext.contentResolver.query(
@@ -179,12 +182,14 @@ class MediaLibrary(context: Context) {
     private data class ColumnIdx(
         val id: Int, val name: Int, val title: Int, val artist: Int,
         val album: Int, val dur: Int, val size: Int, val added: Int,
+        val albumId: Int, // -1 when the cursor has no ALBUM_ID (video, fixtures)
     ) {
         constructor(c: Cursor, proj: Array<String>) : this(
             c.getColumnIndexOrThrow(proj[0]), c.getColumnIndexOrThrow(proj[1]),
             c.getColumnIndexOrThrow(proj[2]), c.getColumnIndexOrThrow(proj[3]),
             c.getColumnIndexOrThrow(proj[4]), c.getColumnIndexOrThrow(proj[5]),
             c.getColumnIndexOrThrow(proj[6]), c.getColumnIndexOrThrow(proj[7]),
+            c.getColumnIndex(MediaStore.Audio.Media.ALBUM_ID),
         )
 
         companion object {
@@ -198,6 +203,7 @@ class MediaLibrary(context: Context) {
                 c.getColumnIndexOrThrow(MediaStore.MediaColumns.DURATION),
                 c.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE),
                 c.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_ADDED),
+                c.getColumnIndex(MediaStore.Audio.Media.ALBUM_ID),
             )
         }
     }
@@ -217,6 +223,7 @@ class MediaLibrary(context: Context) {
             if (artist.isBlank()) artist = fb.artist
         }
         title = TagParser.stripLeadingNo(title)
+        val albumId = if (i.albumId >= 0) runCatching { c.getLong(i.albumId) }.getOrDefault(-1L) else -1L
         return Track(
             key = contentUri.toString(),
             title = title.ifBlank { "Unknown" },
@@ -227,17 +234,27 @@ class MediaLibrary(context: Context) {
             sizeBytes = runCatching { c.getLong(i.size) }.getOrDefault(0L),
             dateAdded = runCatching { c.getLong(i.added) }.getOrDefault(0L),
             isVideo = isVideo,
+            albumId = albumId,
         )
     }
 
-    /** Artwork URI for lock-screen/notification/covers (never throws). */
-    fun artworkUri(trackKey: String, video: Boolean): Uri? = runCatching {
-        val id = ContentUris.parseId(Uri.parse(trackKey))
-        if (video) Uri.parse(trackKey)
-        else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ContentUris.withAppendedId(MediaStore.Audio.Albums.EXTERNAL_CONTENT_URI, id)
+    /**
+     * Artwork URI for lock-screen/notification/covers (never throws).
+     * Rebuilt fix: keyed off the ALBUM id, never the track id (the old code
+     * fed the track row id into Albums.EXTERNAL_CONTENT_URI, i.e. the wrong
+     * artwork or a dead URI). Unknown album → null (honest fallback icon).
+     */
+    fun artworkUri(trackKey: String, albumId: Long, video: Boolean): Uri? = runCatching {
+        if (video) return@runCatching Uri.parse(trackKey)
+        if (albumId < 0) return@runCatching null
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ContentUris.withAppendedId(MediaStore.Audio.Albums.EXTERNAL_CONTENT_URI, albumId)
         } else null
     }.getOrNull()
+
+    /** Convenience overload for queue assembly from a mapped [Track]. */
+    fun artworkUri(track: com.veeshays.pulse.models.Track): Uri? =
+        artworkUri(track.key, track.albumId, track.isVideo)
 
     companion object {
         /** Unified cap (PC parity: music 20k). Bounded memory by construction. */

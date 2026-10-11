@@ -1,6 +1,98 @@
 # PupPlay — Remaining limitations & follow-ups
 
-Living list. Updated 2026-09-25. Device-verified items move out; new findings move in.
+Living list. Updated 2026-10-11 (playback-foundation rebuild). Device-verified items move out; new findings move in.
+
+## Rebuild 2026-10-11 — root cause of the old playback failures
+
+1. **`pupplay://probe-tone` had no DataSource.** ExoPlayer's
+   `DefaultDataSource` cannot open custom schemes, so any item whose
+   *playable* URI was `pupplay://…` stalled in BUFFERING forever (the
+   "remains buffering" symptom). A second variant parsed the mediaId LABEL
+   as a URI (`FileNotFoundException` in diagnostics): a `mediaId` is an
+   opaque identity string, only `localConfiguration.uri` plays.
+2. **The tone was load-bearing for proving playback.** Diagnostics routed
+   the self-test through controller → session → ExoPlayer, so a broken
+   tone path masked (and was blamed for) real MediaStore-URI failures.
+3. **Album art used the wrong id.** `artworkUri()` fed the audio *track*
+   id into `MediaStore.Audio.Albums.EXTERNAL_CONTENT_URI` (which expects
+   the *album* id) — wrong art or a dead URI on notification/lock-screen.
+4. **Errors swallowed the evidence.** `onPlayerError` reported a generic
+   string with no exception class/code and no failing URI, so neither the
+   Snackbar nor the diagnostics could name the broken file.
+5. Single-instance was already correct (one `ExoPlayer.Builder`, one
+   `MediaController.Builder`, session wraps the same player — proven by
+   `session_wrapsSamePlayerInstance`); the rebuild keeps and hardens it
+   with an explicit recreate-guard in `onCreate`.
+
+## Rebuild 2026-10-11 — architecture changes
+
+- `playback/QueueMedia.kt`: `resolveIdentityToUri(mediaId)` takes ONE arg.
+  Only `content://`, `file://`, `android.resource://` pass through.
+  `TONE_MEDIA_ID` / `toneResourceUri` / the tone branch are DELETED — any
+  `pupplay://` identity now resolves to null (reported, never guessed).
+- `playback/TonePlayer.kt` (new): diagnostic tone via `AudioTrack` PCM
+  sine (440Hz, 1500ms), fully outside ExoPlayer/session/controller. Proves
+  device output only; can neither pass nor fail library playback.
+- `playback/PlaybackService.kt`: removed `ACTION_DIAG_PLAY` +
+  `onStartCommand` direct-play hack (service has exactly one entry: the
+  session); `onCreate` releases stale player/session on recreate;
+  `onPlayerError` now reports
+  `class + code + message + failing URI` and records an `ERROR …` transition;
+  session `onAddMediaItems` rejects unresolvable identities loudly with the
+  requested id (no tone fallback).
+- `playback/Diagnostics.kt`: "Play test tone" uses `TonePlayer`
+  (no controller needed); "Direct play" button removed; probe output now
+  carries the full URI + exception message.
+- `models/Media.kt` + `library/MediaLibrary.kt`: `Track.albumId` added
+  (default −1, serialization-compatible); audio query requests
+  `ALBUM_ID` (video volume excluded — unknown columns fail on-device);
+  `artworkUri(key, albumId, video)` keys off the album id, null when
+  unknown; `artworkUri(track)` overload for queue assembly. `ColumnIdx`
+  tolerates cursors without `ALBUM_ID` (fixtures, video).
+- Tests: `ResolverTest` (7) asserts `pupplay://probe-tone` NEVER resolves;
+  `PlaybackEngineTest` engine proof uses neutral label `test:local-file`;
+  new `TonePlayerTest` (5): PCM length/range/periodicity + artwork
+  album-id/unknown/video rules. No mocks on media-discovery/playback paths
+  (real Robolectric service + ExoPlayer, real `mapRows` over MatrixCursor).
+
+## Rebuild 2026-10-11 — commands executed
+
+- `adb devices` → `List of devices attached` (EMPTY — no device).
+- `:app:testDebugUnitTest --offline` → BUILD SUCCESSFUL, **87 tests,
+  0 failures, 0 errors** (incl. PlaybackEngineTest 6/6, ResolverTest 7/7,
+  MediaStoreForensicTest 12/12, TonePlayerTest 5/5). Evidence:
+  `app/build/test-results/testDebugUnitTest/*.xml`.
+- `:app:assembleDebug --offline` → BUILD SUCCESSFUL in 3m48s.
+  `app/build/outputs/apk/debug/app-debug.apk` (22,096,675 bytes,
+  2026-10-11 20:05 local). `aapt dump badging`: package
+  `com.veeshays.pulse.debug`, minSdk 26, targetSdk 34, permissions
+  READ_MEDIA_AUDIO / READ_MEDIA_VIDEO / READ_EXTERNAL_STORAGE(max32) as
+  declared. (`scripts/verify-apk.ps1` itself crashes on this machine —
+  it mis-parses the escaped `sdk.dir` in `local.properties`; aapt used
+  directly instead.)
+- Install + logcat: NOT executed — no authorized device attached
+  (`install-debug.ps1` fails closed on empty `adb devices`, correctly).
+
+## Test results (evidence-backed)
+
+- Build: PASS (assembleDebug, see APK above).
+- Automated tests: PASS 87/87 (see XML evidence above).
+- Audible device playback: NOT VERIFIED — no device was attached. The
+  completion gate is therefore NOT passed: no redesign, no claims about
+  speaker output, position advance on hardware, background/lock-screen,
+  notification controls, headset handling, or force-stop relaunch.
+
+## Needs a real Android device (no device attached to this machine)
+
+- Install the 2026-10-11 debug APK, Fetch, play multiple local files:
+  audible sound, advancing position, pause/resume, seek, prev/next,
+  queue + repeat/shuffle, then background/lock/notification/reconnect,
+  force-stop + relaunch. Capture `adb logcat` for every failure; the new
+  `ERROR …` transitions name the exact exception + URI.
+- Independently: Settings → Play test tone (AudioTrack path) for output
+  sanity — it proves NOTHING about library playback by design.
+- Unchanged carry-overs: lyrics E2E, sun/glow perf on low-end, 1k–10k
+  library scale, BT/focus/ducking ears-on.
 
 ## Engine verdict (proven on JVM via Robolectric, PlaybackEngineTest 6/6)
 
@@ -36,27 +128,28 @@ Living list. Updated 2026-09-25. Device-verified items move out; new findings mo
 - Runtime forensics (Sept 29): phone showed BUFFERING + empty transitions,
   so every layer is now instance-tagged (service/player/session/controller
   IDs, lifecycle create/destroy events, requested-vs-resolved URIs,
-  playWhenReady). Session resolves sourceless items by identity
-  (tone→file, content/file→itself, bare IDs/titles→reported, never guessed);
-  taps pre-verify readability via openFileDescriptor; tone plays from a cache
-  file (no custom scheme in the playback path). Direct-service diag play
-  isolates engine vs controller/session failures.
-- Tone post-mortem (Oct 4): the cache-file tone could go stale between copy
-  and play, and the probe parsed the mediaId LABEL as a URI (guaranteed
-  FileNotFound). Tone now uses the immutable android.resource URI directly
-  (existence verified up front); probes always target the playable URI, never
-  the label. Fetch notices carry full scan reports (rows/mapped/skipped/
-  truncated/added/removed/visible).
+  playWhenReady). Taps pre-verify readability via openFileDescriptor.
+  (Superseded Oct 11: the tone→file fallback, cache-file tone, and
+  direct-service diag play were REMOVED — see rebuild section above.)
+- Tone post-mortem (Oct 4, superseded Oct 11): the cache-file tone could go
+  stale between copy and play, and the probe parsed the mediaId LABEL as a
+  URI (guaranteed FileNotFound). Superseded: the tone no longer exists in
+  the playback path at all (independent AudioTrack in TonePlayer.kt);
+  probes always target the playable URI, never the label. Fetch notices
+  carry full scan reports (rows/mapped/skipped/truncated/added/removed/
+  visible).
 
 ## Decisive on-device protocol (do this first on hardware)
 
 1. Install debug APK, Fetch, open Settings → Playback diagnostics.
-2. Tap **Play test tone** (bundled 5s 440Hz WAV through the real pipeline):
-   - Tone audible ⇒ engine/connection fine → tap a library song; if silent,
-     run **Probe current file** (URI readability) and copy the report.
-   - Tone silent ⇒ engine/connection broken → copy the report (state, timeline,
-     volume, last error) and fix that layer.
-3. Report back: tone result + probe result + copied diagnostics.
+2. Tap a library song FIRST (the real gate — no tone proxy):
+   - Song audible ⇒ engine/connection/URIs fine → exercise queue,
+     background/lock/notification, force-stop + relaunch.
+   - Song silent ⇒ run **Probe current file** (URI readability) and copy
+     the report — the `ERROR …` transition names the exact exception + URI.
+3. Separately, **Play test tone** (AudioTrack, outside the engine) checks
+   device output only. Report back: song result + probe result + tone
+   result + copied diagnostics.
 
 ## Needs a real Android device (no device attached to this machine)
 

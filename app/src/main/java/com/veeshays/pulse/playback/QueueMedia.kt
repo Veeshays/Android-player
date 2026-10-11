@@ -74,25 +74,21 @@ fun persistQueueSnapshot(store: PulseStore, c: MediaController) {
 /** Sentinel re-export so UI call sites don't import ExoPlayer constants. */
 val TIME_UNSET: Long = C.TIME_UNSET
 
-/** Stable identity of the bundled self-test tone (a LABEL, never a source). */
-const val TONE_MEDIA_ID = "pupplay://probe-tone"
-
-/** Package-scoped android.resource URI for the bundled tone (immutable install asset). */
-fun toneResourceUri(packageName: String): String =
-    "android.resource://$packageName/raw/probe_tone"
-
 /**
- * Session resolution contract (§3): given a requested media identity, decide
- * the playable URI. Rules, in order:
- *  - tone identity → caller-supplied tone file URI (no custom scheme is ever
- *    playable; the label only identifies).
- *  - content:// or file:// identity → itself (canonical local sources).
- *  - anything else (bare IDs, titles, unknown schemes) → null: unresolvable,
- *    must be reported, never guessed.
+ * Session resolution contract (rebuilt foundation): given a requested media
+ * identity, decide the playable URI. Rules, in order:
+ *  - content://, file:// or android.resource:// identity → itself (canonical
+ *    local sources; the ONLY playable inputs).
+ *  - anything else (bare IDs, titles, custom schemes including any
+ *    pupplay:// label) → null: unresolvable, must be reported, never guessed.
+ *
+ * There is deliberately NO probe-tone branch: the diagnostic tone lives
+ * outside ExoPlayer (see playback/TonePlayer.kt) and must never appear in
+ * the playback path. A mediaId is an opaque identity label; only
+ * localConfiguration.uri plays.
  * Pure + unit-tested.
  */
-fun resolveIdentityToUri(mediaId: String, toneUri: () -> Uri?): Uri? = when {
-    mediaId == TONE_MEDIA_ID -> runCatching { toneUri() }.getOrNull()
+fun resolveIdentityToUri(mediaId: String): Uri? = when {
     mediaId.startsWith("content://") -> runCatching { Uri.parse(mediaId) }.getOrNull()
     mediaId.startsWith("file://") -> runCatching { Uri.parse(mediaId) }.getOrNull()
     mediaId.startsWith("android.resource://") -> runCatching { Uri.parse(mediaId) }.getOrNull()

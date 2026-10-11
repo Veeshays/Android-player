@@ -434,7 +434,7 @@ fun LibraryScreen(ps: PlayerUiState, onOpenSheet: (String) -> Unit) {
                     return@launch
                 }
                 val items = buildMediaItems(list, state.positions) { t ->
-                    library.artworkUri(t.key, t.isVideo)
+                    library.artworkUri(t)
                 }
                 ps.controller?.let { c ->
                 runCatching {
