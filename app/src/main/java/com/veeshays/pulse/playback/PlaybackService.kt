@@ -17,6 +17,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.ExoPlayer
@@ -99,13 +100,36 @@ class PlaybackService : MediaSessionService() {
             .build()
         // Lifecycle proof: instance IDs pin every later observation to THESE
         // exact objects (same service/player/session or it didn't happen).
+        // The listener is attached to THIS player at construction — the only
+        // playback instance in the process — so callbacks cannot come from
+        // anywhere else. DataSource/MediaSource selection is pinned here:
+        // DefaultDataSource (content/file/resource) → DefaultMediaSourceFactory
+        // (progressive + extractors, e.g. MP3). A track that reaches READY
+        // proves this stack end to end; a stall points at the URI/source.
         PlaybackConnection.recordTransition(
             "SERVICE onCreate service=${this.hashCode()} " +
                 "player=${player.hashCode()} session=${session.hashCode()}",
         )
+        android.util.Log.i(
+            "PupPlayTrace",
+            "SERVICE onCreate service=${this.hashCode()} " +
+                "player=${player.hashCode()} session=${session.hashCode()} " +
+                "token=${session?.token} dataSource=${dataSource.javaClass.name} " +
+                "mediaSourceFactory=DefaultMediaSourceFactory",
+        )
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? {
+        // Proves the UI controller binds to THIS session: package/uid of the
+        // connecting controller are logged so a foreign or stale binder hop
+        // cannot silently impersonate the app's own controller.
+        android.util.Log.i(
+            "PupPlayTrace",
+            "SESSION bind pkg=${controllerInfo.packageName} uid=${controllerInfo.uid} " +
+                "session=${session.hashCode()}",
+        )
+        return session
+    }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         // Swipe-away: keep playing if audible (user expectation for a player),
@@ -147,7 +171,10 @@ class PlaybackService : MediaSessionService() {
             uri.startsWith("android.resource://") -> "resource"
             else -> "unknown-scheme"
         }
-        return "kind=$kind mediaId=${item?.mediaId} uri=$uri " +
+        // player= pins every line to the exact instance: a stale/duplicated
+        // player can never be confused with the active one in logcat.
+        return "player=${p.hashCode()} session=${session.hashCode()} " +
+            "kind=$kind mediaId=${item?.mediaId} uri=$uri " +
             "timeline=${p?.mediaItemCount} idx=${p?.currentMediaItemIndex}"
     }
 
@@ -221,6 +248,22 @@ class PlaybackService : MediaSessionService() {
                 persistPosition(clear = true)
                 if (p?.mediaItemCount == 0) p.setForegroundMode(false)
             }
+        }
+
+        // Timeline arrival proof: setMediaItems from the UI MUST surface
+        // here. If TAP/HANDOFF are logged but TIMELINE never is, the
+        // controller→session hop is the broken handoff — not the decoder.
+        override fun onTimelineChanged(timeline: Timeline, reason: Int) {
+            val line = "TIMELINE reason=$reason windowCount=${timeline.windowCount} ${traceLine()}"
+            android.util.Log.i("PupPlayTrace", line)
+            PlaybackConnection.recordTransition(line)
+        }
+
+        // Loading-bit proof: BUFFERING with isLoading=false means the
+        // player is NOT waiting on data (stuck elsewhere); with true it
+        // is waiting on the DataSource for the URI in traceLine().
+        override fun onIsLoadingChanged(isLoading: Boolean) {
+            android.util.Log.i("PupPlayTrace", "LOADING isLoading=$isLoading ${traceLine()}")
         }
     }
 

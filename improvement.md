@@ -71,6 +71,47 @@ Added for this debugging session; remove after the real-song pass:
   no device is attached. Audible playback, moving timer, pause/seek/
   next/prev on hardware: NOT VERIFIED. Gate still open; no redesign.
 
+## Investigation 2026-10-11 (later) — real-track BUFFERING with TAP but no STATE
+
+New device evidence: real `content://media/external/audio/media/87969`
+stays `BUFFERING`, `playWhenReady=true`, `playing=false`, `pos=0`,
+`dur=0`, `error=null`; readable, `mime=audio/mpeg`, 4096 bytes; queue 64
+items; TAP logged, **no player-state transitions visible**.
+
+Chain analysis (code-traced, no device):
+- TAP/HANDOFF log on the UI side; STATE/TRANSITION/TIMELINE/ERROR log on
+  the service player. TAP without any service line localizes the break to
+  the controller→session hop or a dead controller — NOT the decoder.
+- Two demonstrated gaps fixed (both in the exact silent-tap path):
+  1. `PlaybackConnection.connect()` kept a failed `buildAsync` future
+     forever → permanent no-op reconnects → null controller on every tap.
+     Now: build failure clears the future, records a transition, reports.
+  2. A disconnected controller object stayed in state as engine=ok while
+     transmitting nothing. Now: `MediaController.Listener.onDisconnected`
+     drops it, allows reconnect, reports; `playTracks` checks
+     `isConnected` before HANDOFF (dead controller → reconnect path, and
+     no HANDOFF is logged for commands that went nowhere); TAP lines now
+     carry `controller=` hash + `connected=`; the watchdog also fires on
+     an empty timeline (handoff lost), not just IDLE.
+- Service callbacks hardened against misattribution: every PupPlayTrace
+  line carries `player=` + `session=` IDs (stale/duplicate instances
+  identifiable); added `onTimelineChanged` (arrival proof — TAP/HANDOFF
+  without TIMELINE = broken hop) and `onIsLoadingChanged` (BUFFERING with
+  isLoading=false = stuck elsewhere, not on data); `onGetSession` logs
+  connecting pkg/uid; `onCreate` logs DataSource/MediaSource selection.
+- Production-stack repro (JVM, real decode): two new PlaybackEngineTest
+  tests drive the EXACT `pulseMediaItem` factory (incl. resume
+  ClippingConfiguration) through the service's DefaultMediaSourceFactory:
+  zero-start clip → READY + full duration; 2s-resume clip → READY +
+  ~3s duration. Queue-item construction is therefore NOT the stall (for
+  a valid local file); suspect remains the device-side hop/URI/focus.
+- Suite: **94 tests, 0 failures** (PlaybackEngineTest 8/8). Debug APK
+  rebuilt (22,097,636 B) and attached to release v1.0.0-rebuild as
+  app-debug.apk. Install **BLOCKED** again (`no devices/emulators
+  found`, 2026-10-11). Real-track READY/duration/position/audible,
+  next/previous, two-track pass: NOT VERIFIED. Acceptance NOT met; the
+   device logcat lines above are what will name the actual failure.
+
 ## To continue on a connected device (exact commands)
 
 1. `D:\Android\Sdk\platform-tools\adb.exe devices -l` (expect one `device`)
@@ -180,7 +221,7 @@ Added for this debugging session; remove after the real-song pass:
 - Unchanged carry-overs: lyrics E2E, sun/glow perf on low-end, 1k–10k
   library scale, BT/focus/ducking ears-on.
 
-## Engine verdict (proven on JVM via Robolectric, PlaybackEngineTest 6/6)
+## Engine verdict (proven on JVM via Robolectric, PlaybackEngineTest 8/8 as of latest)
 
 - `PlaybackService` lifecycle runs: session + ExoPlayer constructed, session
   wraps the SAME player instance the UI would drive.

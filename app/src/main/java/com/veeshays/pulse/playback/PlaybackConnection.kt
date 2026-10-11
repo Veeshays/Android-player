@@ -2,6 +2,7 @@ package com.veeshays.pulse.playback
 
 import android.content.ComponentName
 import android.content.Context
+import android.util.Log
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
@@ -49,14 +50,44 @@ object PlaybackConnection {
 
     private var future: ListenableFuture<MediaController>? = null
 
+    private val controllerListener = object : MediaController.Listener {
+        // Session died / connection dropped: the held controller is now a
+        // dead object — commands on it go nowhere (the "TAP but no STATE"
+        // class of silence). Drop it, allow reconnect, say so loudly.
+        override fun onDisconnected(controller: MediaController) {
+            Log.w("PupPlayTrace", "CONTROLLER disconnected hash=${controller.hashCode()}")
+            recordTransition("CONTROLLER disconnected hash=${controller.hashCode()}")
+            if (_controller.value === controller) _controller.value = null
+            runCatching { future?.cancel(true) }
+            future = null
+            reportError("Playback engine disconnected — tap again to restart it")
+        }
+    }
+
     fun connect(context: Context) {
         if (future != null) return
         val app = context.applicationContext
         val token = SessionToken(app, ComponentName(app, PlaybackService::class.java))
-        val f = MediaController.Builder(app, token).buildAsync()
+        val f = MediaController.Builder(app, token)
+            .setListener(controllerListener)
+            .buildAsync()
         future = f
         f.addListener(
-            { _controller.value = runCatching { f.get() }.getOrNull() },
+            {
+                val c = runCatching { f.get() }.getOrNull()
+                if (c == null) {
+                    // Build failed: must NOT keep the dead future, or every
+                    // later connect() is a no-op and taps die silently forever.
+                    Log.w("PupPlayTrace", "CONTROLLER build failed — retry allowed")
+                    recordTransition("CONTROLLER build failed — retry allowed")
+                    future = null
+                    reportError("Playback engine didn't start — tap again")
+                } else {
+                    Log.i("PupPlayTrace", "CONTROLLER connected hash=${c.hashCode()}")
+                    recordTransition("CONTROLLER connected hash=${c.hashCode()}")
+                    _controller.value = c
+                }
+            },
             MoreExecutors.directExecutor(),
         )
     }

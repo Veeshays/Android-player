@@ -435,7 +435,9 @@ fun LibraryScreen(ps: PlayerUiState, onOpenSheet: (String) -> Unit) {
                     "mime=${probe.mime} durMs=${start.durationMs} " +
                     "albumId=${start.albumId} readable=${probe.readable} " +
                     "bytes=${probe.bytesRead} err=${probe.error} " +
-                    "queueSize=${list.size} startIdx=${startIndexOf(list, start.key)}"
+                    "queueSize=${list.size} startIdx=${startIndexOf(list, start.key)} " +
+                    "controller=${ps.controller.hashCode()} " +
+                    "connected=${ps.controller?.isConnected}"
                 android.util.Log.i("PupPlayTrace", tapLine)
                 PlaybackConnection.recordTransition(tapLine)
                 if (!probe.readable) {
@@ -447,7 +449,19 @@ fun LibraryScreen(ps: PlayerUiState, onOpenSheet: (String) -> Unit) {
                 val items = buildMediaItems(list, state.positions) { t ->
                     library.artworkUri(t)
                 }
-                ps.controller?.let { c ->
+                val c = ps.controller
+                if (c != null && !c.isConnected) {
+                    // Dead controller object: it renders engine=ok in cached
+                    // UI state but transmits nothing (the silent-handoff
+                    // class). Drop it via reconnect and say so — never log
+                    // a HANDOFF that went nowhere.
+                    android.util.Log.w(
+                        "PupPlayTrace",
+                        "TAP on disconnected controller hash=${c.hashCode()} — reconnecting",
+                    )
+                    PlaybackConnection.connect(ctx)
+                    PlaybackConnection.reportError("Playback engine reconnecting — tap once more")
+                } else if (c != null) {
                 runCatching {
                     c.setMediaItems(items, startIndexOf(list, start.key), TIME_UNSET)
                     c.prepare()
@@ -464,15 +478,22 @@ fun LibraryScreen(ps: PlayerUiState, onOpenSheet: (String) -> Unit) {
                         "Couldn't start playback (${it.javaClass.simpleName}: ${it.message}) — tap again",
                     )
                 }
-                // Watchdog: a prepared player leaves IDLE almost immediately.
-                // Still IDLE after 2.5s means genuinely stuck — report once.
+                // Watchdog: a prepared player leaves IDLE almost immediately
+                // AND the service must have received the timeline (the
+                // session ADD log proves arrival). Still IDLE — or an empty
+                // timeline, meaning the handoff never arrived — after 2.5s
+                // is a loud failure, never a silent buffer.
                 scope.launch {
                     kotlinx.coroutines.delay(2500)
                     if (c.playbackState == Player.STATE_IDLE) {
+                        android.util.Log.w("PupPlayTrace", "WATCHDOG stuck IDLE ${c.mediaItemCount} items")
                         PlaybackConnection.reportError("Playback didn't start — check the file format")
+                    } else if (c.mediaItemCount == 0) {
+                        android.util.Log.w("PupPlayTrace", "WATCHDOG empty timeline — handoff lost")
+                        PlaybackConnection.reportError("Playback engine didn't receive the queue — tap again")
                     }
                 }
-                } ?: run {
+                } else {
                 // Never fail silently: (re)start the engine and say so.
                 PlaybackConnection.connect(ctx)
                 PlaybackConnection.reportError("Starting playback engine — tap once more")

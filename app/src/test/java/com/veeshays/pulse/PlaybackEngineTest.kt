@@ -7,6 +7,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.test.core.app.ApplicationProvider
 import com.veeshays.pulse.playback.PlaybackService
+import com.veeshays.pulse.playback.pulseMediaItem
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -196,5 +197,64 @@ class PlaybackEngineTest {
         val session = sessionField.get(service) as androidx.media3.session.MediaSession
         assertNotNull(session.token)
         assertSame(player(), session.player)
+    }
+
+    @Test fun productionItem_zeroStartClip_reachesReady() {
+        // The EXACT item factory the UI tap uses (pulseMediaItem, including
+        // its start-position ClippingConfiguration) through the service's
+        // production MediaSource stack. A stall here — not in a hand-built
+        // MediaItem — would be the real-track BUFFERING repro.
+        val p = player()
+        val probe = Probe()
+        p.addListener(probe)
+        try {
+            p.setMediaItem(
+                pulseMediaItem(
+                    key = Uri.fromFile(wavFile()).toString(),
+                    title = "Scanned Song", artist = "Some Artist",
+                    album = "Some Album", artwork = null,
+                    durationMs = 5_000L, resumeMs = null,
+                ),
+            )
+            p.prepare()
+            val ok = pumpFor(match = {
+                p.playbackState == Player.STATE_READY || p.playbackState == Player.STATE_ENDED
+            })
+            assertNull("player error: ${probe.error}", probe.error)
+            assertTrue("production item never left buffering, states=${probe.states}", ok)
+            assertTrue("duration=${p.duration}", p.duration in 4500..5500)
+        } finally {
+            p.removeListener(probe)
+            p.stop()
+        }
+    }
+
+    @Test fun productionItem_resumeClip_reachesReadyShortened() {
+        // Resume path: clipping start at 2s of the 5s fixture must still
+        // prepare (ClippingSource over the progressive extractor) and play
+        // the remaining ~3s — never stall in BUFFERING.
+        val p = player()
+        val probe = Probe()
+        p.addListener(probe)
+        try {
+            p.setMediaItem(
+                pulseMediaItem(
+                    key = Uri.fromFile(wavFile()).toString(),
+                    title = "Scanned Song", artist = "Some Artist",
+                    album = "Some Album", artwork = null,
+                    durationMs = 5_000L, resumeMs = 2_000L,
+                ),
+            )
+            p.prepare()
+            val ok = pumpFor(match = {
+                p.playbackState == Player.STATE_READY || p.playbackState == Player.STATE_ENDED
+            })
+            assertNull("player error: ${probe.error}", probe.error)
+            assertTrue("resume-clipped item never left buffering, states=${probe.states}", ok)
+            assertTrue("duration=${p.duration}", p.duration in 2500..3500)
+        } finally {
+            p.removeListener(probe)
+            p.stop()
+        }
     }
 }
