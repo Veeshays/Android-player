@@ -96,6 +96,7 @@ import com.veeshays.pulse.playback.TIME_UNSET
 import com.veeshays.pulse.playback.DiagnosticsCard
 import com.veeshays.pulse.playback.PlaybackConnection
 import com.veeshays.pulse.playback.buildMediaItems
+import com.veeshays.pulse.playback.probeReadable
 import com.veeshays.pulse.playback.startIndexOf
 import kotlinx.coroutines.launch
 
@@ -417,20 +418,30 @@ fun LibraryScreen(ps: PlayerUiState, onOpenSheet: (String) -> Unit) {
 
         // Queue-follows-view: the tapped list becomes the player playlist
         // (with resume points); the snapshot persists for cold start.
+        // setMediaItems REPLACES the whole timeline, so whatever was active
+        // before (including any stale item) is gone after this call.
         fun playTracks(list: List<Track>, start: Track) {
             scope.launch {
                 // Documented MediaStore access model: prove the content URI
                 // opens BEFORE it reaches Media3, so an unreadable file
                 // reports explicitly instead of stalling in BUFFERING.
-                val readable = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                    runCatching {
-                        ctx.contentResolver.openAssetFileDescriptor(
-                            android.net.Uri.parse(start.key), "r",
-                        )?.close()
-                    }.isSuccess
+                // TEMP-TRACE (device-debug session): structured tap line for
+                // logcat — title/URI/MIME/duration/album/readability. Remove
+                // after the real-song device pass.
+                val probe = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    probeReadable(ctx.contentResolver, start.key)
                 }
-                if (!readable) {
-                    PlaybackConnection.reportError("File unreadable — it may have been deleted")
+                val tapLine = "TAP title=${start.title} uri=${start.key} " +
+                    "mime=${probe.mime} durMs=${start.durationMs} " +
+                    "albumId=${start.albumId} readable=${probe.readable} " +
+                    "bytes=${probe.bytesRead} err=${probe.error} " +
+                    "queueSize=${list.size} startIdx=${startIndexOf(list, start.key)}"
+                android.util.Log.i("PupPlayTrace", tapLine)
+                PlaybackConnection.recordTransition(tapLine)
+                if (!probe.readable) {
+                    PlaybackConnection.reportError(
+                        "File unreadable (${probe.error}) — it may have been deleted",
+                    )
                     return@launch
                 }
                 val items = buildMediaItems(list, state.positions) { t ->
@@ -441,8 +452,17 @@ fun LibraryScreen(ps: PlayerUiState, onOpenSheet: (String) -> Unit) {
                     c.setMediaItems(items, startIndexOf(list, start.key), TIME_UNSET)
                     c.prepare()
                     c.play()
+                    android.util.Log.i(
+                        "PupPlayTrace",
+                        "HANDOFF items=${items.size} idx=${c.currentMediaItemIndex} " +
+                            "mediaId=${c.currentMediaItem?.mediaId} " +
+                            "uri=${c.currentMediaItem?.localConfiguration?.uri}",
+                    )
                 }.onFailure {
-                    PlaybackConnection.reportError("Couldn't start playback — tap again")
+                    android.util.Log.w("PupPlayTrace", "HANDOFF failed", it)
+                    PlaybackConnection.reportError(
+                        "Couldn't start playback (${it.javaClass.simpleName}: ${it.message}) — tap again",
+                    )
                 }
                 // Watchdog: a prepared player leaves IDLE almost immediately.
                 // Still IDLE after 2.5s means genuinely stuck — report once.

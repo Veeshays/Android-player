@@ -75,6 +75,37 @@ fun persistQueueSnapshot(store: PulseStore, c: MediaController) {
 val TIME_UNSET: Long = C.TIME_UNSET
 
 /**
+ * Result of the pre-play readability gate: proves a track's content URI
+ * opens through ContentResolver BEFORE it reaches Media3, so an unreadable
+ * file reports explicitly instead of stalling in BUFFERING. Carries the
+ * MIME type + bytes actually read so the tap trace can name the file.
+ * Robolectric-testable against real files (see SongTapRegressionTest).
+ */
+data class ReadableProbe(
+    val readable: Boolean,
+    val mime: String?,
+    val bytesRead: Int,
+    val error: String?,
+)
+
+/** Opens [key] for reading; never throws — failures return readable=false. */
+fun probeReadable(resolver: android.content.ContentResolver, key: String): ReadableProbe {
+    return try {
+        val uri = Uri.parse(key)
+        val mime = runCatching { resolver.getType(uri) }.getOrNull()
+        var bytes = 0
+        resolver.openInputStream(uri)?.use { ins ->
+            val buf = ByteArray(4096)
+            val n = ins.read(buf)
+            if (n > 0) bytes = n
+        } ?: return ReadableProbe(false, mime, 0, "openInputStream returned null")
+        ReadableProbe(true, mime, bytes, null)
+    } catch (e: Exception) {
+        ReadableProbe(false, null, 0, "${e.javaClass.simpleName}: ${e.message}")
+    }
+}
+
+/**
  * Session resolution contract (rebuilt foundation): given a requested media
  * identity, decide the playable URI. Rules, in order:
  *  - content://, file:// or android.resource:// identity → itself (canonical

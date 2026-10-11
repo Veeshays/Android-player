@@ -1,6 +1,92 @@
 # PupPlay — Remaining limitations & follow-ups
 
-Living list. Updated 2026-10-11 (playback-foundation rebuild). Device-verified items move out; new findings move in.
+Living list. Updated 2026-10-11 (critical playback-failure investigation). Device-verified items move out; new findings move in.
+
+## Investigation 2026-10-11 — device report shows stale install, NOT current code
+
+Device report: `engine=ok state=buffering playWhenReady=true playing=false
+media=pupplay://probe-tone pos=0 dur=0 error=null transitions=[]`.
+
+**Root cause: the device runs a pre-rebuild APK.** Proof: a full-source
+search shows the string `pupplay://probe-tone` exists NOWHERE in current
+`app/src/main` — not as a mediaId, URI, or constant (only in comments
+and in tests asserting it never resolves). The current build physically
+cannot produce `media=pupplay://probe-tone`. Consequences:
+
+- The "tone rings but songs silent at 00:00" symptom was observed on the
+  OLD engine (tone-through-controller + session tone fallback), where a
+  tap could leave the stale probe item active.
+- In the current build there is no probe item to get stuck: the tone
+  never touches ExoPlayer, and every tap calls `setMediaItems`, which
+  REPLACES the whole timeline (verified in code + regression test).
+- `transitions=[]` is consistent with a stale/restarted process, not
+  with current code (which records TAP/HANDOFF/STATE/ERROR lines).
+
+Before retesting on hardware: **uninstall ALL old builds**
+(`com.veeshays.pulse` release AND `com.veeshays.pulse.debug` — they are
+separate app icons and the report could come from either), then install
+the debug APK below and re-run the protocol. If the report reappears on
+the new build, the PupPlayTrace logcat lines (next section) will name
+the exact file + exception.
+
+## Investigation 2026-10-11 — temporary structured diagnostics (logcat tag PupPlayTrace)
+
+Added for this debugging session; remove after the real-song pass:
+- `Screens.playTracks`: `TAP title=… uri=… mime=… durMs=… albumId=…
+  readable=… bytes=… err=… queueSize=… startIdx=…` (proves the exact
+  scanned track, its readability, and the handoff index) + `HANDOFF
+  items=… idx=… mediaId=… uri=…` after `setMediaItems` (proves
+  replacement). Handoff failures log with exception + report it.
+- `PlaybackService`: `STATE … kind=track|file|resource|none … pos=…
+  dur=… buffered=…` on every state change (distinguishes real-track
+  vs resource vs unknown-scheme playback — probe vs song is now
+  structurally visible); `TRANSITION …` with title; `ADD passthrough /
+  resolve / reject` in the session guard; `ERROR code=…(name) uri=…
+  chain=[… <- …]` with the FULL nested cause chain in `onPlayerError`.
+- Readability gate extracted to `probeReadable(resolver, key)` in
+  `QueueMedia.kt` (returns mime + bytes read + named error, never throws)
+  so the exact tap gate is unit-testable. No personal metadata is logged
+  beyond track identity needed to pin a failing file.
+- Media3 API verified by inspection: `MediaMetadata.Builder.setDurationMs
+  (java.lang.Long)` is boxed/nullable — unknown scanner durations stay
+  null (never fake 0:00); the extractor fills the real timeline duration.
+
+## Investigation 2026-10-11 — regression tests + evidence
+
+- New `SongTapRegressionTest` (5/5, Robolectric, no mocks): real WAV
+  fixture through the real `probeReadable` gate (readable, bytes>0);
+  bogus content URI fails with a named error; tapped tracks build a
+  playlist of ONLY playable URIs with identity preserved and correct
+  start index; `pupplay://probe-tone` can never resolve; durations
+  propagate scanner → MediaItem (240000 → metadata; 0 → null).
+- Full suite: `:app:testDebugUnitTest --offline` BUILD SUCCESSFUL,
+  **92 tests, 0 failures, 0 errors** (was 87; +5 new). Evidence:
+  `app/build/test-results/testDebugUnitTest/*.xml`
+  (`SongTapRegressionTest` timestamp 2026-10-11T15:34:05Z).
+- `:app:assembleDebug --offline` BUILD SUCCESSFUL;
+  `app-debug.apk` (22,097,401 B, 2026-10-11 21:05 local).
+- Install: **BLOCKED** — `adb install -r app-debug.apk` →
+  `adb.exe: no devices/emulators found`; `adb devices -l` empty
+  (evidence captured 2026-10-11 ~21:05 local). No logcat exists because
+  no device is attached. Audible playback, moving timer, pause/seek/
+  next/prev on hardware: NOT VERIFIED. Gate still open; no redesign.
+
+## To continue on a connected device (exact commands)
+
+1. `D:\Android\Sdk\platform-tools\adb.exe devices -l` (expect one `device`)
+2. Uninstall stale builds:
+   `adb uninstall com.veeshays.pulse` and
+   `adb uninstall com.veeshays.pulse.debug`
+3. `adb install -r D:\OPENCODEE\07.PulseAndroid\app\build\outputs\apk\debug\app-debug.apk`
+4. Grant audio access on first Fetch (Android 13+: READ_MEDIA_AUDIO).
+5. In a second terminal, start trace capture BEFORE tapping:
+   `adb logcat -c; adb logcat -s PupPlayTrace:I '*:S'`
+6. Fetch → tap a real song → expect `TAP … readable=true`,
+   `HANDOFF …`, `ADD passthrough … kind=track`,
+   `STATE READY … playing=true pos=… dur=…`, audible sound + moving timer.
+7. If silent: the `ERROR … uri=… chain=[…]` line + `TAP` line name the
+   file and cause — paste them into a bug report with the copied
+   in-app diagnostics (Settings → Playback diagnostics → Copy report).
 
 ## Rebuild 2026-10-11 — root cause of the old playback failures
 

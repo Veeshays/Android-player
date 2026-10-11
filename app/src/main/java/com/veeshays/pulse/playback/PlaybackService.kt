@@ -132,14 +132,38 @@ class PlaybackService : MediaSessionService() {
         return super.onStartCommand(intent, flags, startId)
     }
 
+    // TEMP-TRACE (device-debug session): structured logcat lines under tag
+    // PupPlayTrace for media transitions, states, timeline and errors.
+    // Remove after the real-song device pass. No personal metadata is
+    // logged — only track identity needed to pin a failing file.
+    private fun traceLine(): String {
+        val p = player
+        val item = p?.currentMediaItem
+        val uri = item?.localConfiguration?.uri?.toString()
+        val kind = when {
+            uri == null -> "none"
+            uri.startsWith("content://") -> "track"
+            uri.startsWith("file://") -> "file"
+            uri.startsWith("android.resource://") -> "resource"
+            else -> "unknown-scheme"
+        }
+        return "kind=$kind mediaId=${item?.mediaId} uri=$uri " +
+            "timeline=${p?.mediaItemCount} idx=${p?.currentMediaItemIndex}"
+    }
+
     private val serviceListener = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             player?.setForegroundMode(isPlaying) // FGS alive only while audible
+            android.util.Log.i("PupPlayTrace", "PLAYING isPlaying=$isPlaying ${traceLine()}")
             if (!isPlaying) persistPosition()
         }
 
         override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
             persistPosition()
+            android.util.Log.i(
+                "PupPlayTrace",
+                "TRANSITION reason=$reason title=${item?.mediaMetadata?.title} ${traceLine()}",
+            )
             // NOTE: never store.load() here — reloading disk state would clobber
             // live UI edits (shuffle toggles, queue edits) not yet flushed.
             val key = item?.mediaId ?: return
@@ -162,8 +186,12 @@ class PlaybackService : MediaSessionService() {
             val failingUri = p?.currentMediaItem?.localConfiguration?.uri?.toString()
                 ?: p?.currentMediaItem?.mediaId
                 ?: "unknown item"
-            val detail = "${error.javaClass.simpleName} code=${error.errorCodeName} " +
-                "msg=${error.message} uri=$failingUri"
+            // Full cause chain: DataSource/Extractor/Decoder failures nest.
+            val chain = generateSequence<Throwable>(error) { it.cause }
+                .joinToString(" <- ") { "${it.javaClass.simpleName}: ${it.message}" }
+            val detail = "code=${error.errorCode}(${error.errorCodeName}) " +
+                "uri=$failingUri chain=[$chain]"
+            android.util.Log.e("PupPlayTrace", "ERROR $detail ${traceLine()}")
             PlaybackConnection.recordTransition("ERROR $detail")
             if (p != null && p.hasNextMediaItem()) {
                 p.seekToNextMediaItem()
@@ -185,9 +213,10 @@ class PlaybackService : MediaSessionService() {
             val p = player
             // Transition history keeps stalls visible: a player stuck in
             // BUFFERING (or flapping IDLE) can no longer look merely "quiet".
-            PlaybackConnection.recordTransition(
-                "$name ready=${p?.playWhenReady} pos=${p?.currentPosition} dur=${p?.duration}",
-            )
+            val line = "$name ready=${p?.playWhenReady} playing=${p?.isPlaying} " +
+                "pos=${p?.currentPosition} dur=${p?.duration} buffered=${p?.bufferedPosition} ${traceLine()}"
+            android.util.Log.i("PupPlayTrace", "STATE $line")
+            PlaybackConnection.recordTransition(line)
             if (state == Player.STATE_ENDED) {
                 persistPosition(clear = true)
                 if (p?.mediaItemCount == 0) p.setForegroundMode(false)
@@ -241,15 +270,28 @@ class PlaybackService : MediaSessionService() {
             val out = mediaItems.map { item ->
                 val playable = item.localConfiguration?.uri
                 if (playable != null) {
+                    android.util.Log.i(
+                        "PupPlayTrace",
+                        "ADD passthrough mediaId=${item.mediaId} uri=$playable " +
+                            "title=${item.mediaMetadata.title}",
+                    )
                     item // already resolved: canonical passthrough
                 } else {
                     val resolved = resolveIdentityToUri(item.mediaId)
                     if (resolved != null) {
+                        android.util.Log.i(
+                            "PupPlayTrace",
+                            "ADD resolve requested=${item.mediaId} resolved=$resolved",
+                        )
                         PlaybackConnection.recordTransition(
                             "RESOLVE requested=${item.mediaId} resolved=$resolved",
                         )
                         item.buildUpon().setUri(resolved).build()
                     } else {
+                        android.util.Log.w(
+                            "PupPlayTrace",
+                            "ADD reject requested=${item.mediaId} (unresolvable identity)",
+                        )
                         PlaybackConnection.recordTransition(
                             "REJECT requested=${item.mediaId} (unresolvable identity)",
                         )
