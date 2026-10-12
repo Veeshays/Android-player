@@ -61,6 +61,7 @@ class PlaybackService : MediaSessionService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var wasPlayingBeforeLoss = false
     private var lastSaveMs = 0L
+    private var stallGen = 0 // retires stale BUFFERING watchdog checks
 
     override fun onCreate() {
         super.onCreate()
@@ -244,9 +245,39 @@ class PlaybackService : MediaSessionService() {
                 "pos=${p?.currentPosition} dur=${p?.duration} buffered=${p?.bufferedPosition} ${traceLine()}"
             android.util.Log.i("PupPlayTrace", "STATE $line")
             PlaybackConnection.recordTransition(line)
+            if (state == Player.STATE_BUFFERING) {
+                armStallWatchdog()
+            } else {
+                stallGen++ // any other state retires a pending stall check
+            }
             if (state == Player.STATE_ENDED) {
                 persistPosition(clear = true)
                 if (p?.mediaItemCount == 0) p.setForegroundMode(false)
+            }
+        }
+
+        /**
+         * Converts the exact reported symptom (BUFFERING + pos=0 + error=null,
+         * forever) into a loud, actionable error naming the URI. Local files
+         * open in milliseconds — 10s with zero progress is never legitimate
+         * buffering. Reports only; never stops or skips (no behavior change).
+         */
+        private fun armStallWatchdog() {
+            val gen = ++stallGen
+            val pos0 = player?.currentPosition ?: 0L
+            val buf0 = player?.bufferedPosition ?: 0L
+            val uri0 = player?.currentMediaItem?.localConfiguration?.uri?.toString()
+                ?: player?.currentMediaItem?.mediaId
+            scope.launch {
+                kotlinx.coroutines.delay(STALL_TIMEOUT_MS)
+                val q = player ?: return@launch
+                val msg = stallReport(
+                    q.playbackState, gen == stallGen,
+                    pos0, buf0, q.currentPosition, q.bufferedPosition, uri0,
+                ) ?: return@launch
+                android.util.Log.w("PupPlayTrace", "STALL $msg ${traceLine()}")
+                PlaybackConnection.recordTransition("STALL $msg")
+                PlaybackConnection.reportError(msg)
             }
         }
 
@@ -364,6 +395,9 @@ class PlaybackService : MediaSessionService() {
     }
 
     companion object {
+        /** Stall watchdog: BUFFERING with zero progress this long is a failure. */
+        const val STALL_TIMEOUT_MS = 10_000L
+
         /** Build a one-off status notification (e.g. error hint). Session owns the media one. */
         fun hintNotification(ctx: Context, text: String): android.app.Notification {
             val mgr = ctx.getSystemService(NotificationManager::class.java)
@@ -414,21 +448,50 @@ fun pulseMediaItem(
     artwork: Uri?,
     durationMs: Long,
     resumeMs: Long?,
-): MediaItem = MediaItem.Builder()
-    .setMediaId(key)
-    .setUri(key)
-    .setMediaMetadata(
-        MediaMetadata.Builder()
-            .setTitle(title)
-            .setArtist(artist)
-            .setAlbumTitle(album)
-            .setArtworkUri(artwork)
-            .setDurationMs(durationMs.takeIf { it > 0 })
-            .build(),
-    )
-    .setClippingConfiguration(
-        MediaItem.ClippingConfiguration.Builder()
-            .setStartPositionMs(resumeMs?.coerceAtLeast(0L) ?: 0L)
-            .build(),
-    )
-    .build()
+): MediaItem {
+    val builder = MediaItem.Builder()
+        .setMediaId(key)
+        .setUri(key)
+        .setMediaMetadata(
+            MediaMetadata.Builder()
+                .setTitle(title)
+                .setArtist(artist)
+                .setAlbumTitle(album)
+                .setArtworkUri(artwork)
+                .setDurationMs(durationMs.takeIf { it > 0 })
+                .build(),
+        )
+    // Clipping wraps the source in ClippingSource — only pay for that
+    // machinery when actually resuming mid-track. Plain items take the
+    // direct extractor path (one less layer between source and renderer).
+    val start = resumeMs?.coerceAtLeast(0L) ?: 0L
+    if (start > 0) {
+        builder.setClippingConfiguration(
+            MediaItem.ClippingConfiguration.Builder()
+                .setStartPositionMs(start)
+                .build(),
+        )
+    }
+    return builder.build()
+}
+
+/**
+ * Pure stall decision (unit-tested): returns the loud STALL message when the
+ * player is STILL buffering with zero progress after the timeout, else null.
+ * [stillSameEpisode] is false when any state change retired the check.
+ */
+fun stallReport(
+    stateNow: Int,
+    stillSameEpisode: Boolean,
+    startPosMs: Long,
+    startBufferedMs: Long,
+    curPosMs: Long,
+    curBufferedMs: Long,
+    uri: String?,
+): String? {
+    if (stateNow != Player.STATE_BUFFERING || !stillSameEpisode) return null
+    if (curPosMs != startPosMs || curBufferedMs != startBufferedMs) return null
+    return "Still loading after ${PlaybackService.STALL_TIMEOUT_MS / 1000}s " +
+        "(uri=$uri) — reinstall the latest APK, re-tap the song, then " +
+        "capture logcat (adb logcat -s PupPlayTrace:I *:S)"
+}

@@ -111,7 +111,7 @@ fun DiagnosticsCard(ps: PlayerUiState) {
             if (transitions.isNotEmpty()) {
                 Spacer(Modifier.height(4.dp))
                 Text("Transitions (newest last):", style = MaterialTheme.typography.labelMedium)
-                transitions.takeLast(5).forEach {
+                transitions.takeLast(8).forEach {
                     Text(it, style = MaterialTheme.typography.bodySmall)
                 }
             }
@@ -132,7 +132,7 @@ fun DiagnosticsCard(ps: PlayerUiState) {
                         appendLine(audioLine())
                         appendLine("error=$lastError")
                         appendLine("probe=$probe")
-                        appendLine("transitions=${transitions.takeLast(5)}")
+                        appendLine("transitions=${transitions.takeLast(8)}")
                     }
                     try {
                         val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager

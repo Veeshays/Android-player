@@ -147,6 +147,32 @@ Goal: prove everything provable without hardware, then ship a testable APK.
    force-stop relaunch, and the PupPlayTrace logcat from a real tap.
    Acceptance NOT claimed until those are observed.
 
+## Investigation 2026-10-12 (later) — silent BUFFERING made loud + repo made portable
+
+Device still silent on real tracks, still no logcat provided. Two tracks:
+1. **Symptom fix (blind, safe):** infinite BUFFERING + error=null can no
+   longer stay silent — a service stall watchdog fires after 10s of zero
+   progress and reports the exact URI plus the logcat capture command
+   (`STALL …` transition + Snackbar + log line). Reports only; never
+   stops/skips playback. Pure decision (`stallReport`) unit-tested ×4.
+   Also: plain (non-resume) items no longer wrapped in ClippingSource
+   (direct extractor path; resume clipping unchanged + still tested), and
+   transition history deepened 12→40 (card/report show last 8) so a
+   debugging session can't scroll the evidence away. Non-blocking
+   `release()` from the previous pass included.
+2. **Repo portability (for the other PC):** NOTHING machine-specific was
+   committed (`local.properties`/SDK path, `build/`, `.gradle/` all
+   ignored + verified untracked). Added Gradle wrapper (pinned 8.9 —
+   any PC builds with `gradlew.bat`, no system Gradle) and `SETUP.md`
+   (JDK 17 → SDK packages → clone → build/test/install → device gate →
+   release flow). Removed a duplicated `setForegroundMode(false)` line
+   found during the audit.
+- Suite: **102 tests, 0 failures** (DiagnosticsTest 6/6 incl. stall
+  matrix; PlaybackEngineTest 12/12). Debug APK rebuilt + attached to
+  release `v1.0.0-rebuild`. Install/logcat/audible: still BLOCKED here
+  (`adb devices` empty) — the other PC with the phone runs the
+  7-command protocol in `## To continue`.
+
 ## To continue on a connected device (exact commands)
 
 1. `D:\Android\Sdk\platform-tools\adb.exe devices -l` (expect one `device`)

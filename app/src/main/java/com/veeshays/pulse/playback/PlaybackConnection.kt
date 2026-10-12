@@ -36,7 +36,7 @@ object PlaybackConnection {
     val transitions: StateFlow<List<String>> = _transitions
 
     fun recordTransition(entry: String) {
-        _transitions.value = (_transitions.value + entry).takeLast(12)
+        _transitions.value = (_transitions.value + entry).takeLast(40)
     }
 
     fun reportError(text: String) {
