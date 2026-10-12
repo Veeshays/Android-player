@@ -112,6 +112,41 @@ Chain analysis (code-traced, no device):
   next/previous, two-track pass: NOT VERIFIED. Acceptance NOT met; the
    device logcat lines above are what will name the actual failure.
 
+## Investigation 2026-10-12 — make-it-play pass: scheme + codec proof, release refreshed
+
+Goal: prove everything provable without hardware, then ship a testable APK.
+- Emulator route attempted and CLOSED: system image
+  `android-34/google_apis/x86_64` downloaded, AVD `pupplay` created, but
+  boot refuses — `x86_64 emulation currently requires hardware
+  acceleration` and no hypervisor driver can be installed here (AMD CPU,
+  no elevation for WHPX). No device, no emulator: hardware paths stay
+  device-only. AVD/image left in place for a machine that has acceleration.
+- JVM scheme proof (the failing shape, content:// + BUFFERING): serves
+  REAL bytes at content:// URIs from a registered ContentProvider over
+  real files — the exact openAssetFileDescriptor path Media3's
+  ContentResolverDataSource uses. `productionItem_contentScheme_decodesToReady`
+  → READY + true duration through `pulseMediaItem` + service stack.
+  (Dead ends documented: Robolectric input-stream registration is bypassed
+  by Media3's fd path; FileProvider needs manifest metadata Robolectric
+  lacks; provider needs manual ProviderInfo attach; fds must not be
+  closed on JDK 17. All handled/annotated in-test.)
+- JVM codec proof (the failing MIME, audio/mpeg): synthesized silent
+  MPEG-1 Layer III frames (valid headers + empty granules) → `Mp3Extractor`
+  sniffs, selects audio/mpeg, reads samples; full
+  `mp3ThroughProductionStack_reachesReady` (MP3 at content:// URI →
+  service player) → READY, no error.
+- Suite: **98 tests, 0 failures, 0 errors** (PlaybackEngineTest 12/12).
+  Evidence: `app/build/test-results/testDebugUnitTest/*.xml`.
+- Small hardening alongside: `PlaybackConnection.release()` no longer
+  blocks on `future.get()` on the main thread (ANR risk on exit).
+- Debug APK rebuilt (22,097,636 B, 2026-10-12) and attached to release
+  `v1.0.0-rebuild` as app-debug.apk for on-device testing.
+- Install from here: **BLOCKED** (`adb devices` empty). What remains
+  strictly hardware-only: audible sound, moving timer on device,
+  next/previous + two-track pass, background/lock/notification,
+   force-stop relaunch, and the PupPlayTrace logcat from a real tap.
+   Acceptance NOT claimed until those are observed.
+
 ## To continue on a connected device (exact commands)
 
 1. `D:\Android\Sdk\platform-tools\adb.exe devices -l` (expect one `device`)

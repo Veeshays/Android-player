@@ -93,9 +93,12 @@ object PlaybackConnection {
     }
 
     fun release() {
+        // Never block: future.get() on the main thread during onDestroy can
+        // ANR (binder hop). Release the built controller if present and drop
+        // the future; the service (the true owner) is unaffected.
+        _controller.value?.let { runCatching { it.release() } }
         _controller.value = null
-        runCatching { future?.get()?.release() }
-        future?.cancel(true)
+        runCatching { future?.cancel(true) }
         future = null
     }
 }
